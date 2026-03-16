@@ -89,6 +89,7 @@ def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
 
     key_lower = key.lower()
 
+    # Already square miles
     if key_lower in {
         "drnarea",
         "drainage_area",
@@ -97,9 +98,11 @@ def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
         "da_sqmi",
         "totdasqmi",
         "tot_drainage_area_sqmi",
+        "tot_basin_area",
     }:
         return number
 
+    # Square kilometers -> convert to square miles
     if key_lower in {
         "totdasqkm",
         "areasqkm",
@@ -126,14 +129,18 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
         "AreaSqKm",
         "areasqkm",
         "da_sqkm",
+        "TOT_BASIN_AREA",
+        "tot_basin_area",
     ]
 
+    # Direct top-level keys
     for key in direct_keys:
         if key in data:
             converted = _convert_key_value_to_sqmi(key, data[key])
             if converted is not None:
                 return converted
 
+    # GeoJSON feature properties
     features = data.get("features")
     if isinstance(features, list):
         for feat in features:
@@ -144,12 +151,22 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
                     if converted is not None:
                         return converted
 
-            prop_name = str(props.get("name") or props.get("characteristic_id") or props.get("id") or "").lower()
-            prop_value = props.get("value")
+            prop_name = str(
+                props.get("name")
+                or props.get("characteristic_id")
+                or props.get("id")
+                or ""
+            ).lower()
+            prop_value = (
+                props.get("value")
+                if props.get("value") is not None
+                else props.get("characteristic_value")
+            )
             converted = _convert_key_value_to_sqmi(prop_name, prop_value)
             if converted is not None:
                 return converted
 
+    # Nested list/dict blocks
     for top_key in ["parameters", "parametersList", "results", "workspace", "messages", "characteristics"]:
         block = data.get(top_key)
 
@@ -166,7 +183,13 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
                     or ""
                 )
 
-                converted = _convert_key_value_to_sqmi(code, item.get("value"))
+                item_value = (
+                    item.get("value")
+                    if item.get("value") is not None
+                    else item.get("characteristic_value")
+                )
+
+                converted = _convert_key_value_to_sqmi(code, item_value)
                 if converted is not None:
                     return converted
 
@@ -198,7 +221,11 @@ def get_drainage_area_from_nldi_tot(comid: str) -> Tuple[Optional[float], str, s
 
     drainage_area_sqmi = extract_drainage_area_from_payload(data)
     if drainage_area_sqmi is not None:
-        return drainage_area_sqmi, f"Drainage area found from NLDI accumulated characteristics: {drainage_area_sqmi:.3f} mi²", excerpt
+        return (
+            drainage_area_sqmi,
+            f"Drainage area found from NLDI accumulated characteristics: {drainage_area_sqmi:.3f} mi²",
+            excerpt,
+        )
 
     return None, "NLDI accumulated characteristics did not contain a recognized drainage-area field", excerpt
 
@@ -239,7 +266,11 @@ def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[floa
 
         drainage_area_sqmi = extract_drainage_area_from_payload(data)
         if drainage_area_sqmi is not None:
-            return drainage_area_sqmi, f"Drainage area found from StreamStats: {drainage_area_sqmi:.3f} mi²", "\n\n".join(excerpts)
+            return (
+                drainage_area_sqmi,
+                f"Drainage area found from StreamStats: {drainage_area_sqmi:.3f} mi²",
+                "\n\n".join(excerpts),
+            )
 
         notes.append(f"No recognized drainage-area field in response: {url}")
 
