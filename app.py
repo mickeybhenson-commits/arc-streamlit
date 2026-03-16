@@ -35,10 +35,12 @@ with st.sidebar:
     lon = st.number_input("Longitude", value=DEFAULT_LON, format="%.6f")
 
     demo_depths = get_demo_depths()
+    default_index = demo_depths.index(2.0) if 2.0 in demo_depths else len(demo_depths) // 2
+
     selected_depth = st.selectbox(
         "Select demo water depth (ft)",
         options=demo_depths,
-        index=demo_depths.index(2.0),
+        index=default_index,
         format_func=lambda x: f"{x:.2f} ft",
     )
 
