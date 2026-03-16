@@ -7,6 +7,7 @@ import requests
 
 
 REQUEST_TIMEOUT = 25
+SQKM_TO_SQMI = 0.3861021585424458
 
 
 @dataclass
@@ -66,8 +67,44 @@ def _extract_number(value: Any) -> Optional[float]:
         return None
 
 
+def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
+    number = _extract_number(value)
+    if number is None:
+        return None
+
+    key_lower = key.lower()
+
+    # Already square miles
+    if key_lower in {
+        "drnarea",
+        "drainage_area",
+        "areasqmi",
+        "da",
+        "da_sqmi",
+        "totdasqmi",
+        "tot_drainage_area_sqmi",
+    }:
+        return number
+
+    # Square kilometers -> convert to square miles
+    if key_lower in {
+        "totdasqkm",
+        "areasqkm",
+        "da_sqkm",
+        "tot_drainage_area_sqkm",
+        "catchmentareasqkm",
+    }:
+        return number * SQKM_TO_SQMI
+
+    return None
+
+
 def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
-    candidate_keys = [
+    """
+    Search common NLDI / StreamStats response structures for drainage area.
+    """
+
+    direct_keys = [
         "DRNAREA",
         "drnarea",
         "drainage_area",
@@ -75,43 +112,73 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
         "areasqmi",
         "DA",
         "da_sqmi",
+        "TOTDASQKM",
+        "totdasqkm",
+        "AreaSqKm",
+        "areasqkm",
+        "da_sqkm",
     ]
 
-    for key in candidate_keys:
+    # Direct top-level keys
+    for key in direct_keys:
         if key in data:
-            value = _extract_number(data[key])
-            if value is not None:
-                return value
+            converted = _convert_key_value_to_sqmi(key, data[key])
+            if converted is not None:
+                return converted
 
+    # GeoJSON feature properties
     features = data.get("features")
     if isinstance(features, list):
         for feat in features:
             props = feat.get("properties", {})
-            for key in candidate_keys:
+            for key in direct_keys:
                 if key in props:
-                    value = _extract_number(props[key])
-                    if value is not None:
-                        return value
+                    converted = _convert_key_value_to_sqmi(key, props[key])
+                    if converted is not None:
+                        return converted
 
-    for top_key in ["parameters", "parametersList", "results", "workspace", "messages"]:
+            # Some responses may return name/value style properties
+            prop_name = str(props.get("name") or props.get("characteristic_id") or props.get("id") or "").lower()
+            prop_value = props.get("value")
+            converted = _convert_key_value_to_sqmi(prop_name, prop_value)
+            if converted is not None:
+                return converted
+
+    # List/dict blocks
+    for top_key in ["parameters", "parametersList", "results", "workspace", "messages", "characteristics"]:
         block = data.get(top_key)
 
         if isinstance(block, list):
             for item in block:
                 if not isinstance(item, dict):
                     continue
-                code = str(item.get("code") or item.get("name") or "").upper()
-                if code in {"DRNAREA", "DRAINAGE_AREA", "DA"}:
-                    value = _extract_number(item.get("value"))
-                    if value is not None:
-                        return value
+
+                # Common style: {"name": "...", "value": ...}
+                code = str(
+                    item.get("code")
+                    or item.get("name")
+                    or item.get("characteristic_id")
+                    or item.get("id")
+                    or ""
+                )
+
+                converted = _convert_key_value_to_sqmi(code, item.get("value"))
+                if converted is not None:
+                    return converted
+
+                # Nested properties if present
+                for key in direct_keys:
+                    if key in item:
+                        converted = _convert_key_value_to_sqmi(key, item[key])
+                        if converted is not None:
+                            return converted
 
         elif isinstance(block, dict):
-            for key in candidate_keys:
+            for key in direct_keys:
                 if key in block:
-                    value = _extract_number(block[key])
-                    if value is not None:
-                        return value
+                    converted = _convert_key_value_to_sqmi(key, block[key])
+                    if converted is not None:
+                        return converted
 
     return None
 
@@ -122,13 +189,13 @@ def get_drainage_area_from_nldi_tot(comid: str) -> Tuple[Optional[float], str]:
 
     data = safe_get_json(url, params=params)
     if not data:
-        return None, "NLDI total characteristics lookup failed"
+        return None, "NLDI accumulated characteristics lookup failed"
 
     drainage_area_sqmi = extract_drainage_area_from_payload(data)
     if drainage_area_sqmi is not None:
-        return drainage_area_sqmi, "Drainage area found from NLDI accumulated characteristics"
+        return drainage_area_sqmi, f"Drainage area found from NLDI accumulated characteristics: {drainage_area_sqmi:.3f} mi²"
 
-    return None, "NLDI accumulated characteristics did not contain drainage area"
+    return None, "NLDI accumulated characteristics did not contain a recognized drainage-area field"
 
 
 def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[float], str]:
@@ -164,9 +231,9 @@ def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[floa
 
         drainage_area_sqmi = extract_drainage_area_from_payload(data)
         if drainage_area_sqmi is not None:
-            return drainage_area_sqmi, f"Drainage area found from StreamStats service: {url}"
+            return drainage_area_sqmi, f"Drainage area found from StreamStats: {drainage_area_sqmi:.3f} mi²"
 
-        notes.append(f"No drainage area in response: {url}")
+        notes.append(f"No recognized drainage-area field in response: {url}")
 
     return None, " | ".join(notes) if notes else "StreamStats lookup failed"
 
