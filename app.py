@@ -165,12 +165,12 @@ if run_button:
         out1, out2, out3 = st.columns(3)
 
         with out1:
-            st.metric("Selected Demo Depth", f"{selected_depth:.2f} ft")
-            st.metric("Estimated Max Velocity", f"{float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
+            st.write(f"**Selected Demo Depth:** {selected_depth:.2f} ft")
+            st.write(f"**Estimated Max Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
 
         with out2:
-            st.metric("Estimated Power", f"{power['power_watts']:.1f} W")
-            st.metric("Estimated Power", f"{power['power_kw']:.4f} kW")
+            st.write(f"**Estimated Power:** {power['power_watts']:.1f} W")
+            st.write(f"**Estimated Power:** {power['power_kw']:.4f} kW")
             st.write(f"**Turbine diameter:** {turbine_diameter_ft:.2f} ft")
             st.write(f"**Cp:** {cp:.2f}")
 
@@ -185,6 +185,74 @@ if run_button:
                 f"z = {z_from_surface:.2f} ft below surface",
                 language="text",
             )
+
+        # ── Deployment map ────────────────────────────────────────────────────
+        st.subheader("Deployment Map")
+        try:
+            import pydeck as pdk
+
+            map_points = [
+                {
+                    "lat":   est_locations["max_velocity_lat"],
+                    "lon":   est_locations["max_velocity_lon"],
+                    "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
+                    "color": [255, 140, 0, 230],   # orange
+                    "radius": 4,
+                },
+                {
+                    "lat":   est_locations["deployment_lat"],
+                    "lon":   est_locations["deployment_lon"],
+                    "label": f"ARC Deployment Point  depth={selected_depth:.2f} ft",
+                    "color": [0, 200, 255, 230],   # cyan
+                    "radius": 4,
+                },
+            ]
+
+            scatter_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_points,
+                get_position="[lon, lat]",
+                get_fill_color="color",
+                get_radius="radius",
+                radius_min_pixels=8,
+                radius_max_pixels=20,
+                pickable=True,
+            )
+
+            view = pdk.ViewState(
+                latitude=lat,
+                longitude=lon,
+                zoom=17,
+                pitch=45,
+                bearing=0,
+            )
+
+            st.pydeck_chart(
+                pdk.Deck(
+                    map_style="mapbox://styles/mapbox/satellite-streets-v12",
+                    initial_view_state=view,
+                    layers=[scatter_layer],
+                    tooltip={"text": "{label}"},
+                ),
+                use_container_width=True,
+            )
+
+            col_leg1, col_leg2, _ = st.columns([1, 1, 4])
+            with col_leg1:
+                st.markdown(
+                    '<span style="color:#FF8C00;font-weight:700;">●</span>'
+                    '&nbsp; Max Velocity Point',
+                    unsafe_allow_html=True,
+                )
+            with col_leg2:
+                st.markdown(
+                    '<span style="color:#00C8FF;font-weight:700;">●</span>'
+                    '&nbsp; ARC Deployment Point',
+                    unsafe_allow_html=True,
+                )
+
+        except Exception as map_err:
+            st.warning(f"Map could not render: {map_err}")
 
         if show_debug:
             st.subheader("Raw NLDI tot payload")
