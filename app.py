@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("ARC Hydrokinetic Deployment Advisor")
-st.caption("Version with automatic drainage area from coordinates and manual fallback.")
+st.caption("Version with improved automatic drainage-area lookup and manual fallback.")
 
 with st.sidebar:
     st.header("Inputs")
@@ -48,7 +48,7 @@ This version uses:
 - manual **latitude**
 - manual **longitude**
 - manual **depth**
-- **automatic drainage area from USGS** when available
+- **automatic drainage area from coordinates** when available
 - manual drainage-area fallback
 - Western North Carolina **regional curves**
 - **map disabled temporarily**
@@ -72,6 +72,8 @@ if run_button:
                     "Automatic drainage-area lookup failed for this point. "
                     "Check 'Override with manual drainage area' and enter a value."
                 )
+                st.write("Hydro lookup notes:")
+                st.code(hydro.notes)
                 st.stop()
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
