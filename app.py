@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 st.title("ARC Hydrokinetic Deployment Advisor")
-st.caption("Version with improved automatic drainage-area lookup and manual fallback.")
+st.caption("Version with automatic drainage-area lookup, debug output, and manual fallback.")
 
 with st.sidebar:
     st.header("Inputs")
