@@ -7,6 +7,9 @@ from utils.hydro_logic import (
     format_summary_table,
 )
 
+DEFAULT_LAT = 35.311900
+DEFAULT_LON = -83.181000
+
 st.set_page_config(
     page_title="ARC Hydrokinetic Deployment Advisor",
     page_icon="🌊",
@@ -14,13 +17,15 @@ st.set_page_config(
 )
 
 st.title("ARC Hydrokinetic Deployment Advisor")
-st.caption("Version with automatic drainage-area lookup, debug output, and manual fallback.")
+st.caption("Cullowhee Creek / Ramsey Center starter version with automatic drainage-area lookup.")
 
 with st.sidebar:
     st.header("Inputs")
 
-    lat = st.number_input("Latitude", value=35.430100, format="%.6f")
-    lon = st.number_input("Longitude", value=-83.447200, format="%.6f")
+    st.write("Default coordinates are preset near Cullowhee Creek by the Ramsey Center area.")
+    lat = st.number_input("Latitude", value=DEFAULT_LAT, format="%.6f")
+    lon = st.number_input("Longitude", value=DEFAULT_LON, format="%.6f")
+
     depth_ft = st.number_input(
         "Measured water depth (ft)",
         min_value=0.0,
@@ -40,15 +45,14 @@ with st.sidebar:
         disabled=not use_manual_da,
     )
 
-    show_debug = st.checkbox("Show raw lookup debug output", value=True)
+    show_debug = st.checkbox("Show raw lookup debug output", value=False)
 
     run_button = st.button("Run Deployment Recommendation", use_container_width=True)
 
 st.markdown(
     """
 This version uses:
-- manual **latitude**
-- manual **longitude**
+- default coordinates near **Cullowhee Creek / Ramsey Center**
 - manual **depth**
 - **automatic drainage area from coordinates** when available
 - manual drainage-area fallback
@@ -110,6 +114,8 @@ if run_button:
 
         with col2:
             st.subheader("Hydro Context")
+            st.write(f"**Latitude used:** {lat:.6f}")
+            st.write(f"**Longitude used:** {lon:.6f}")
             st.write(f"**Stream name:** {hydro.stream_name or 'Unknown'}")
             st.write(f"**COMID:** {hydro.comid or 'N/A'}")
             st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
@@ -135,4 +141,4 @@ if run_button:
         st.code(str(e))
 
 else:
-    st.info("Enter values in the sidebar, then click **Run Deployment Recommendation**.")
+    st.info("Default coordinates are already loaded. Enter the measured depth, then click Run Deployment Recommendation.")
