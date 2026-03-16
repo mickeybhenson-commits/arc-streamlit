@@ -11,8 +11,6 @@ from utils.hydro_logic import (
     estimate_power_output,
     build_demo_scenario_table,
 )
-from utils.mapping import build_demo_map
-
 
 DEFAULT_LAT = 35.311900
 DEFAULT_LON = -83.181000
@@ -25,7 +23,7 @@ st.set_page_config(
 )
 
 st.title("ARC Hydrokinetic Deployment Advisor")
-st.caption("Demo mode with 25 preset water depths around 2 feet near Cullowhee Creek / Ramsey Center.")
+st.caption("Stable demo mode with preset water depths from 0.25 ft to 6.50 ft near Cullowhee Creek / Ramsey Center.")
 
 with st.sidebar:
     st.header("Inputs")
@@ -35,7 +33,8 @@ with st.sidebar:
     lon = st.number_input("Longitude", value=DEFAULT_LON, format="%.6f")
 
     demo_depths = get_demo_depths()
-    default_index = demo_depths.index(2.0) if 2.0 in demo_depths else len(demo_depths) // 2
+    default_depth = 2.00
+    default_index = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
 
     selected_depth = st.selectbox(
         "Select demo water depth (ft)",
@@ -79,11 +78,12 @@ st.markdown(
     """
 This demo version uses:
 - default coordinates near **Cullowhee Creek / Ramsey Center**
-- **25 preset water depths around 2 feet**
+- preset demo depths from **0.25 ft to 6.50 ft**
 - **automatic drainage area from coordinates** when available
 - manual drainage-area fallback
 - Western North Carolina **regional curves**
 - **estimated** max velocity point, velocity, and power
+- **map disabled for stability**
 """
 )
 
@@ -127,7 +127,7 @@ if run_button:
                 bankfull=bankfull,
             )
             power = estimate_power_output(
-                velocity_ft_s=est_velocity["estimated_max_velocity_ft_s"],
+                velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
                 turbine_diameter_ft=turbine_diameter_ft,
                 cp=cp,
             )
@@ -142,16 +142,7 @@ if run_button:
                 cp=cp,
             )
 
-            demo_map = build_demo_map(
-                arc_lat=lat,
-                arc_lon=lon,
-                max_lat=est_locations["max_velocity_lat"],
-                max_lon=est_locations["max_velocity_lon"],
-                deploy_lat=est_locations["deployment_lat"],
-                deploy_lon=est_locations["deployment_lon"],
-                selected_depth_ft=selected_depth,
-                estimated_max_velocity_ft_s=est_velocity["estimated_max_velocity_ft_s"],
-            )
+        st.success("Demo recommendation computed successfully.")
 
         top1, top2 = st.columns([1, 1])
 
@@ -186,7 +177,7 @@ if run_button:
 
         with out1:
             st.metric("Selected Demo Depth", f"{selected_depth:.2f} ft")
-            st.metric("Estimated Max Velocity", f"{est_velocity['estimated_max_velocity_ft_s']:.2f} ft/s")
+            st.metric("Estimated Max Velocity", f"{float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
             st.write(f"**Confidence:** {est_velocity['confidence_label']}")
             st.write(est_velocity["note"])
 
@@ -212,17 +203,13 @@ if run_button:
                 language="text",
             )
 
-        st.subheader("Map: ARC vs Estimated Max Velocity Point vs Deployment Point")
-        try:
-            from streamlit_folium import st_folium
-            st_folium(demo_map, width=None, height=520)
-        except Exception as map_error:
-            st.error(f"Map error: {map_error}")
+        st.subheader("Map")
+        st.info("Map disabled for stability. Estimated point coordinates are listed above.")
 
         st.subheader("Regional-Curve Summary")
         st.dataframe(summary_df, use_container_width=True)
 
-        st.subheader("All 25 Demo Depth Scenarios")
+        st.subheader("All Demo Depth Scenarios")
         st.dataframe(scenarios_df, use_container_width=True)
 
         if show_debug:
@@ -237,4 +224,4 @@ if run_button:
         st.code(str(e))
 
 else:
-    st.info("Default coordinates are already loaded. Choose one of the 25 demo depths and click Run Demo Recommendation.")
+    st.info("Default coordinates are already loaded. Choose a demo depth and click Run Demo Recommendation.")
