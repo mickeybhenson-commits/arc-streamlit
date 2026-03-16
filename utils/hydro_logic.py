@@ -1,9 +1,3 @@
-
----
-
-## 4) `arc-streamlit/utils/hydro_logic.py`
-
-```python
 from __future__ import annotations
 
 from typing import Dict, Tuple
