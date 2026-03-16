@@ -219,8 +219,8 @@ if run_button:
                 get_position="[lon, lat]",
                 get_fill_color="color",
                 get_radius="radius",
-                radius_min_pixels=8,
-                radius_max_pixels=20,
+                radius_min_pixels=4,
+                radius_max_pixels=8,
                 pickable=True,
             )
 
