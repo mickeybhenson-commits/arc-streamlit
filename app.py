@@ -83,7 +83,6 @@ This demo version uses:
 - manual drainage-area fallback
 - Western North Carolina **regional curves**
 - **estimated** max velocity point, velocity, and power
-- **map disabled for stability**
 """
 )
 
@@ -128,16 +127,6 @@ if run_button:
             )
             power = estimate_power_output(
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
-                turbine_diameter_ft=turbine_diameter_ft,
-                cp=cp,
-            )
-
-            summary_df = format_summary_table(drainage_area_sqmi, bankfull, selected_depth)
-            scenarios_df = build_demo_scenario_table(
-                lat=lat,
-                lon=lon,
-                depths_ft=demo_depths,
-                bankfull=bankfull,
                 turbine_diameter_ft=turbine_diameter_ft,
                 cp=cp,
             )
@@ -202,15 +191,6 @@ if run_button:
                 f"z = {selected_depth:.2f} ft",
                 language="text",
             )
-
-        st.subheader("Map")
-        st.info("Map disabled for stability. Estimated point coordinates are listed above.")
-
-        st.subheader("Regional-Curve Summary")
-        st.dataframe(summary_df, use_container_width=True)
-
-        st.subheader("All Demo Depth Scenarios")
-        st.dataframe(scenarios_df, use_container_width=True)
 
         if show_debug:
             st.subheader("Raw NLDI tot payload")
