@@ -40,6 +40,8 @@ with st.sidebar:
         disabled=not use_manual_da,
     )
 
+    show_debug = st.checkbox("Show raw lookup debug output", value=True)
+
     run_button = st.button("Run Deployment Recommendation", use_container_width=True)
 
 st.markdown(
@@ -74,6 +76,14 @@ if run_button:
                 )
                 st.write("Hydro lookup notes:")
                 st.code(hydro.notes)
+
+                if show_debug:
+                    st.subheader("Raw NLDI tot payload")
+                    st.code(hydro.debug_nldi_tot_excerpt, language="json")
+
+                    st.subheader("Raw StreamStats payload")
+                    st.code(hydro.debug_streamstats_excerpt, language="json")
+
                 st.stop()
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
@@ -112,6 +122,13 @@ if run_button:
 
         st.subheader("Regional-Curve Summary")
         st.dataframe(summary_df, use_container_width=True)
+
+        if show_debug:
+            st.subheader("Raw NLDI tot payload")
+            st.code(hydro.debug_nldi_tot_excerpt, language="json")
+
+            st.subheader("Raw StreamStats payload")
+            st.code(hydro.debug_streamstats_excerpt, language="json")
 
     except Exception as e:
         st.error("The app hit an error.")
