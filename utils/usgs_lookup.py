@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+import json
 import requests
 
 
@@ -18,6 +19,8 @@ class HydroContext:
     stream_name: Optional[str]
     source: str
     notes: str
+    debug_nldi_tot_excerpt: str
+    debug_streamstats_excerpt: str
 
 
 def safe_get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -32,6 +35,18 @@ def safe_get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Optional
         return response.json()
     except Exception:
         return None
+
+
+def json_excerpt(data: Optional[Dict[str, Any]], max_chars: int = 2500) -> str:
+    if data is None:
+        return "None"
+    try:
+        text = json.dumps(data, indent=2)
+        if len(text) > max_chars:
+            return text[:max_chars] + "\n... [truncated]"
+        return text
+    except Exception:
+        return str(data)
 
 
 def get_nldi_comid(lat: float, lon: float) -> Tuple[Optional[str], Optional[str], Optional[str], str]:
@@ -74,7 +89,6 @@ def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
 
     key_lower = key.lower()
 
-    # Already square miles
     if key_lower in {
         "drnarea",
         "drainage_area",
@@ -86,7 +100,6 @@ def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
     }:
         return number
 
-    # Square kilometers -> convert to square miles
     if key_lower in {
         "totdasqkm",
         "areasqkm",
@@ -100,10 +113,6 @@ def _convert_key_value_to_sqmi(key: str, value: Any) -> Optional[float]:
 
 
 def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
-    """
-    Search common NLDI / StreamStats response structures for drainage area.
-    """
-
     direct_keys = [
         "DRNAREA",
         "drnarea",
@@ -119,14 +128,12 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
         "da_sqkm",
     ]
 
-    # Direct top-level keys
     for key in direct_keys:
         if key in data:
             converted = _convert_key_value_to_sqmi(key, data[key])
             if converted is not None:
                 return converted
 
-    # GeoJSON feature properties
     features = data.get("features")
     if isinstance(features, list):
         for feat in features:
@@ -137,14 +144,12 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
                     if converted is not None:
                         return converted
 
-            # Some responses may return name/value style properties
             prop_name = str(props.get("name") or props.get("characteristic_id") or props.get("id") or "").lower()
             prop_value = props.get("value")
             converted = _convert_key_value_to_sqmi(prop_name, prop_value)
             if converted is not None:
                 return converted
 
-    # List/dict blocks
     for top_key in ["parameters", "parametersList", "results", "workspace", "messages", "characteristics"]:
         block = data.get(top_key)
 
@@ -153,7 +158,6 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
                 if not isinstance(item, dict):
                     continue
 
-                # Common style: {"name": "...", "value": ...}
                 code = str(
                     item.get("code")
                     or item.get("name")
@@ -166,7 +170,6 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
                 if converted is not None:
                     return converted
 
-                # Nested properties if present
                 for key in direct_keys:
                     if key in item:
                         converted = _convert_key_value_to_sqmi(key, item[key])
@@ -183,22 +186,24 @@ def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
     return None
 
 
-def get_drainage_area_from_nldi_tot(comid: str) -> Tuple[Optional[float], str]:
+def get_drainage_area_from_nldi_tot(comid: str) -> Tuple[Optional[float], str, str]:
     url = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}/tot"
     params = {"f": "json"}
 
     data = safe_get_json(url, params=params)
+    excerpt = json_excerpt(data)
+
     if not data:
-        return None, "NLDI accumulated characteristics lookup failed"
+        return None, "NLDI accumulated characteristics lookup failed", excerpt
 
     drainage_area_sqmi = extract_drainage_area_from_payload(data)
     if drainage_area_sqmi is not None:
-        return drainage_area_sqmi, f"Drainage area found from NLDI accumulated characteristics: {drainage_area_sqmi:.3f} mi²"
+        return drainage_area_sqmi, f"Drainage area found from NLDI accumulated characteristics: {drainage_area_sqmi:.3f} mi²", excerpt
 
-    return None, "NLDI accumulated characteristics did not contain a recognized drainage-area field"
+    return None, "NLDI accumulated characteristics did not contain a recognized drainage-area field", excerpt
 
 
-def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[float], str]:
+def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[float], str, str]:
     candidate_calls = [
         (
             "https://streamstats.usgs.gov/streamstatsservices/watershed.geojson",
@@ -222,20 +227,23 @@ def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[floa
     ]
 
     notes = []
+    excerpts = []
 
     for url, params in candidate_calls:
         data = safe_get_json(url, params=params)
+        excerpts.append(f"URL: {url}\n{json_excerpt(data, max_chars=1500)}")
+
         if not data:
             notes.append(f"Failed: {url}")
             continue
 
         drainage_area_sqmi = extract_drainage_area_from_payload(data)
         if drainage_area_sqmi is not None:
-            return drainage_area_sqmi, f"Drainage area found from StreamStats: {drainage_area_sqmi:.3f} mi²"
+            return drainage_area_sqmi, f"Drainage area found from StreamStats: {drainage_area_sqmi:.3f} mi²", "\n\n".join(excerpts)
 
         notes.append(f"No recognized drainage-area field in response: {url}")
 
-    return None, " | ".join(notes) if notes else "StreamStats lookup failed"
+    return None, " | ".join(notes) if notes else "StreamStats lookup failed", "\n\n".join(excerpts)
 
 
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
@@ -246,15 +254,17 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
 
     drainage_area_sqmi = None
     source = "No automatic drainage area available"
+    debug_nldi_tot_excerpt = "Not requested"
+    debug_streamstats_excerpt = "Not requested"
 
     if comid:
-        drainage_area_sqmi, tot_note = get_drainage_area_from_nldi_tot(comid)
+        drainage_area_sqmi, tot_note, debug_nldi_tot_excerpt = get_drainage_area_from_nldi_tot(comid)
         notes.append(tot_note)
         if drainage_area_sqmi is not None:
             source = "USGS NLDI accumulated characteristics"
 
     if drainage_area_sqmi is None:
-        ss_drainage_area, ss_note = get_streamstats_drainage_area(lat, lon)
+        ss_drainage_area, ss_note, debug_streamstats_excerpt = get_streamstats_drainage_area(lat, lon)
         notes.append(ss_note)
         if ss_drainage_area is not None:
             drainage_area_sqmi = ss_drainage_area
@@ -267,4 +277,6 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
         stream_name=stream_name,
         source=source,
         notes=" | ".join(notes),
+        debug_nldi_tot_excerpt=debug_nldi_tot_excerpt,
+        debug_streamstats_excerpt=debug_streamstats_excerpt,
     )
