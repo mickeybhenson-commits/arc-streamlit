@@ -106,7 +106,12 @@ def format_summary_table(drainage_area_sqmi: float, bankfull: Dict[str, float], 
 
 
 def get_demo_depths() -> List[float]:
-    return [round(1.40 + 0.05 * i, 2) for i in range(25)]
+    depths = []
+    value = 0.25
+    while value <= 6.50 + 1e-9:
+        depths.append(round(value, 2))
+        value += 0.25
+    return depths
 
 
 def estimate_demo_max_velocity(depth_ft: float, bankfull: Dict[str, float]) -> Dict[str, Union[float, str]]:
