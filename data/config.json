@@ -1,0 +1,38 @@
+{
+  "app_name": "ARC Hydrokinetic Deployment Advisor",
+  "region": "Western North Carolina",
+  "units": {
+    "depth": "ft",
+    "drainage_area": "square_miles",
+    "bankfull_area": "ft2",
+    "bankfull_width": "ft",
+    "bankfull_depth": "ft",
+    "bankfull_discharge": "cfs"
+  },
+  "regional_curves": {
+    "Abkf": {
+      "a": 22.1,
+      "b": 0.67,
+      "description": "Estimated bankfull cross-sectional area"
+    },
+    "Wbkf": {
+      "a": 19.9,
+      "b": 0.36,
+      "description": "Estimated bankfull width"
+    },
+    "Dbkf": {
+      "a": 1.1,
+      "b": 0.31,
+      "description": "Estimated bankfull mean depth"
+    },
+    "Qbkf": {
+      "a": 115.7,
+      "b": 0.73,
+      "description": "Estimated bankfull discharge"
+    }
+  },
+  "decision_thresholds": {
+    "too_shallow_ratio": 0.6,
+    "favorable_upper_ratio": 1.4
+  }
+}
