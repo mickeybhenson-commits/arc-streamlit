@@ -167,8 +167,6 @@ if run_button:
         with out1:
             st.metric("Selected Demo Depth", f"{selected_depth:.2f} ft")
             st.metric("Estimated Max Velocity", f"{float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
-            st.write(f"**Confidence:** {est_velocity['confidence_label']}")
-            st.write(est_velocity["note"])
 
         with out2:
             st.metric("Estimated Power", f"{power['power_watts']:.1f} W")
@@ -178,17 +176,13 @@ if run_button:
 
         with out3:
             st.write("**Estimated max velocity point (x, y, z)**")
+            # z from water surface: max velocity occurs ~20% of depth below surface
+            # per log-law open channel velocity profile (standard hydraulics)
+            z_from_surface = round(selected_depth * 0.20, 2)
             st.code(
                 f"x = {est_locations['max_velocity_lon']:.6f}\n"
                 f"y = {est_locations['max_velocity_lat']:.6f}\n"
-                f"z = {selected_depth:.2f} ft",
-                language="text",
-            )
-            st.write("**Estimated ARC deployment point**")
-            st.code(
-                f"x = {est_locations['deployment_lon']:.6f}\n"
-                f"y = {est_locations['deployment_lat']:.6f}\n"
-                f"z = {selected_depth:.2f} ft",
+                f"z = {z_from_surface:.2f} ft below surface",
                 language="text",
             )
 
