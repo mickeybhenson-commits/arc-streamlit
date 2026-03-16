@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 
 
-REQUEST_TIMEOUT = 20
+REQUEST_TIMEOUT = 25
 
 
 @dataclass
@@ -21,128 +21,177 @@ class HydroContext:
 
 def safe_get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     try:
-        response = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        response = requests.get(
+            url,
+            params=params,
+            timeout=REQUEST_TIMEOUT,
+            headers={"Accept": "application/json"},
+        )
         response.raise_for_status()
         return response.json()
     except Exception:
         return None
 
 
-def get_nldi_comid(lat: float, lon: float) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Attempts to snap a coordinate to the hydrologic network using an NLDI-style endpoint.
-    If the service changes or fails, the rest of the app still works.
-    """
-    url = "https://labs.waterdata.usgs.gov/api/nldi/linked-data/comid/position"
-    params = {"coords": f"POINT({lon} {lat})"}
+def get_nldi_comid(lat: float, lon: float) -> Tuple[Optional[str], Optional[str], Optional[str], str]:
+    url = "https://api.water.usgs.gov/nldi/linked-data/comid/position"
+    params = {
+        "coords": f"POINT({lon} {lat})",
+        "f": "json",
+    }
 
     data = safe_get_json(url, params=params)
     if not data:
-        return None, None, None
+        return None, None, None, "NLDI position lookup failed"
 
     try:
         features = data.get("features", [])
         if not features:
-            return None, None, None
+            return None, None, None, "NLDI returned no matching features"
 
         props = features[0].get("properties", {})
         comid = str(props.get("identifier") or props.get("comid") or "")
         reachcode = str(props.get("reachcode") or "")
         stream_name = props.get("name") or props.get("gnis_name") or "Unnamed stream"
-        return comid or None, reachcode or None, stream_name or None
+
+        return comid or None, reachcode or None, stream_name or None, "NLDI position lookup succeeded"
     except Exception:
-        return None, None, None
+        return None, None, None, "NLDI response parse failed"
 
 
-def extract_drainage_area_from_streamstats_payload(data: Dict[str, Any]) -> Optional[float]:
-    common_keys = ["drainage_area", "DRNAREA", "AreaSqMi", "areasqmi", "DA", "da_sqmi"]
+def _extract_number(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except Exception:
+        return None
 
-    for key in common_keys:
+
+def extract_drainage_area_from_payload(data: Dict[str, Any]) -> Optional[float]:
+    candidate_keys = [
+        "DRNAREA",
+        "drnarea",
+        "drainage_area",
+        "AreaSqMi",
+        "areasqmi",
+        "DA",
+        "da_sqmi",
+    ]
+
+    for key in candidate_keys:
         if key in data:
-            try:
-                return float(data[key])
-            except Exception:
-                pass
+            value = _extract_number(data[key])
+            if value is not None:
+                return value
 
-    for top_key in ["parameters", "parametersList", "results", "workspace"]:
+    features = data.get("features")
+    if isinstance(features, list):
+        for feat in features:
+            props = feat.get("properties", {})
+            for key in candidate_keys:
+                if key in props:
+                    value = _extract_number(props[key])
+                    if value is not None:
+                        return value
+
+    for top_key in ["parameters", "parametersList", "results", "workspace", "messages"]:
         block = data.get(top_key)
 
         if isinstance(block, list):
             for item in block:
                 if not isinstance(item, dict):
                     continue
-                name = str(item.get("name") or item.get("code") or "").upper()
-                if name in {"DRNAREA", "DRAINAGE_AREA", "DA"}:
-                    try:
-                        return float(item.get("value"))
-                    except Exception:
-                        pass
+                code = str(item.get("code") or item.get("name") or "").upper()
+                if code in {"DRNAREA", "DRAINAGE_AREA", "DA"}:
+                    value = _extract_number(item.get("value"))
+                    if value is not None:
+                        return value
 
         elif isinstance(block, dict):
-            for key in common_keys:
+            for key in candidate_keys:
                 if key in block:
-                    try:
-                        return float(block[key])
-                    except Exception:
-                        pass
-
-    features = data.get("features")
-    if isinstance(features, list):
-        for feat in features:
-            props = feat.get("properties", {})
-            for key in common_keys:
-                if key in props:
-                    try:
-                        return float(props[key])
-                    except Exception:
-                        pass
+                    value = _extract_number(block[key])
+                    if value is not None:
+                        return value
 
     return None
 
 
-def get_streamstats_drainage_area(lat: float, lon: float) -> Optional[float]:
-    """
-    Defensive attempt to retrieve drainage area from StreamStats-style services.
-    """
+def get_drainage_area_from_nldi_tot(comid: str) -> Tuple[Optional[float], str]:
+    url = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}/tot"
+    params = {"f": "json"}
+
+    data = safe_get_json(url, params=params)
+    if not data:
+        return None, "NLDI total characteristics lookup failed"
+
+    drainage_area_sqmi = extract_drainage_area_from_payload(data)
+    if drainage_area_sqmi is not None:
+        return drainage_area_sqmi, "Drainage area found from NLDI accumulated characteristics"
+
+    return None, "NLDI accumulated characteristics did not contain drainage area"
+
+
+def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[float], str]:
     candidate_calls = [
         (
             "https://streamstats.usgs.gov/streamstatsservices/watershed.geojson",
-            {"rcode": "NC", "xlocation": lon, "ylocation": lat, "crs": 4326, "includeparameters": "true"},
+            {
+                "rcode": "NC",
+                "xlocation": lon,
+                "ylocation": lat,
+                "crs": 4326,
+                "includeparameters": "true",
+            },
         ),
         (
             "https://streamstats.usgs.gov/streamstatsservices/parameters.json",
-            {"rcode": "NC", "xlocation": lon, "ylocation": lat, "crs": 4326},
+            {
+                "rcode": "NC",
+                "xlocation": lon,
+                "ylocation": lat,
+                "crs": 4326,
+            },
         ),
     ]
+
+    notes = []
 
     for url, params in candidate_calls:
         data = safe_get_json(url, params=params)
         if not data:
+            notes.append(f"Failed: {url}")
             continue
 
-        drainage_area_sqmi = extract_drainage_area_from_streamstats_payload(data)
+        drainage_area_sqmi = extract_drainage_area_from_payload(data)
         if drainage_area_sqmi is not None:
-            return drainage_area_sqmi
+            return drainage_area_sqmi, f"Drainage area found from StreamStats service: {url}"
 
-    return None
+        notes.append(f"No drainage area in response: {url}")
+
+    return None, " | ".join(notes) if notes else "StreamStats lookup failed"
 
 
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
-    comid, reachcode, stream_name = get_nldi_comid(lat, lon)
-    drainage_area_sqmi = get_streamstats_drainage_area(lat, lon)
-
     notes = []
-    if comid:
-        notes.append(f"NLDI/flowline match found (COMID={comid})")
-    else:
-        notes.append("No NLDI COMID found automatically")
 
-    if drainage_area_sqmi is not None:
-        notes.append(f"USGS drainage area found: {drainage_area_sqmi:.3f} mi^2")
-        source = "USGS online services"
-    else:
-        notes.append("USGS drainage area lookup failed; manual drainage area entry required")
-        source = "manual fallback needed"
+    comid, reachcode, stream_name, nldi_note = get_nldi_comid(lat, lon)
+    notes.append(nldi_note)
+
+    drainage_area_sqmi = None
+    source = "No automatic drainage area available"
+
+    if comid:
+        drainage_area_sqmi, tot_note = get_drainage_area_from_nldi_tot(comid)
+        notes.append(tot_note)
+        if drainage_area_sqmi is not None:
+            source = "USGS NLDI accumulated characteristics"
+
+    if drainage_area_sqmi is None:
+        ss_drainage_area, ss_note = get_streamstats_drainage_area(lat, lon)
+        notes.append(ss_note)
+        if ss_drainage_area is not None:
+            drainage_area_sqmi = ss_drainage_area
+            source = "USGS StreamStats"
 
     return HydroContext(
         drainage_area_sqmi=drainage_area_sqmi,
