@@ -12,8 +12,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT = 35.311900
-DEFAULT_LON = -83.181000
+DEFAULT_LAT = 35.302740
+DEFAULT_LON = -83.183447
 
 
 st.set_page_config(
@@ -227,8 +227,8 @@ if run_button:
             view = pdk.ViewState(
                 latitude=lat,
                 longitude=lon,
-                zoom=17,
-                pitch=45,
+                zoom=19,
+                pitch=0,
                 bearing=0,
             )
 
