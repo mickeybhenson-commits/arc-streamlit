@@ -190,6 +190,11 @@ if run_button:
         st.subheader("Deployment Map")
         try:
             import pydeck as pdk
+            import os
+
+            # Set token via environment variable — most reliable across pydeck versions
+            MAPBOX_TOKEN = "pk.eyJ1IjoibWJoZW5zb24xOTQ1IiwiYSI6ImNtbXRrM2owaTFzencycnB5dHFvN2J5dW8ifQ.OG5D5ZFCg9XroLargRIGMg"
+            os.environ["MAPBOX_API_KEY"] = MAPBOX_TOKEN
 
             map_points = [
                 {
