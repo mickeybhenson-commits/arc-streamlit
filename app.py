@@ -71,48 +71,9 @@ with st.sidebar:
     )
 
     st.subheader("Wake Model (Jensen)")
-    k_wake = st.number_input(
-        "Wake decay coefficient, k",
-        min_value=0.01,
-        max_value=0.20,
-        value=0.05,
-        step=0.01,
-        format="%.2f",
-        help=(
-            "Jensen wake decay constant for open-channel flow. "
-            "0.04–0.06 is standard for water turbine arrays. "
-            "Higher k = faster wake recovery."
-        ),
-    )
-
-    # ── Jensen wake model ─────────────────────────────────────────────────────
-    # Step 1: solve Cp = 4a(1-a)² for axial induction factor a (Newton-Raphson)
-    import math as _math
-    def _solve_induction(cp_val: float) -> float:
-        a = 0.25
-        for _ in range(50):
-            f  =  4 * a * (1 - a) ** 2 - cp_val
-            fp =  4 * (1 - a) ** 2 - 8 * a * (1 - a)
-            if abs(fp) < 1e-12:
-                break
-            a -= f / fp
-            a  = max(0.01, min(0.49, a))
-        return a
-
-    a_ind = _solve_induction(cp)
-    ct    = 4 * a_ind * (1 - a_ind)           # thrust coefficient
-    r_ft  = turbine_diameter_ft / 2.0          # rotor radius (ft)
-    x_ft  = 4.0                                # station spacing (ft) — fixed by vessel
-
-    # Jensen velocity ratio: V_wake/V_0 = 1 - (1 - √(1-Ct)) · (r / (r + k·x))²
-    wake_velocity_factor = 1.0 - (1.0 - _math.sqrt(max(0.0, 1.0 - ct))) * (r_ft / (r_ft + k_wake * x_ft)) ** 2
-    wake_velocity_factor = round(max(0.50, min(1.00, wake_velocity_factor)), 4)
-
     st.caption(
-        f"Cp={cp:.2f} → a={a_ind:.3f}, Ct={ct:.3f}\n\n"
-        f"**Computed η_wake = {wake_velocity_factor:.4f}**\n\n"
-        f"Station 5' power ≈ {wake_velocity_factor**3:.2%} of Station 1'\n\n"
-        f"Station 9' power ≈ {wake_velocity_factor**6:.2%} of Station 1'"
+        "Wake decay coefficient k and η_wake are auto-computed from "
+        "regional curve hydraulics (Froude number at bankfull) after running."
     )
 
     show_debug = st.checkbox("Show raw lookup debug output", value=False)
@@ -151,6 +112,38 @@ if run_button:
                 st.stop()
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
+
+            # ── Jensen wake model — auto-computed from regional curve hydraulics ──
+            # Froude number at bankfull: Fr = V_bkf / sqrt(g * D_bkf)
+            # k = 0.04 + 0.02 * min(Fr, 1.0)  → bounded 0.04–0.06
+            # Thrust coefficient Ct derived from Cp via axial induction factor:
+            #   Cp = 4a(1-a)²  →  Ct = 4a(1-a)
+            import math as _math
+
+            _g_ft_s2   = 32.2
+            _v_bkf     = bankfull["Qbkf"] / bankfull["Abkf"] if bankfull["Abkf"] > 0 else 1.0
+            _fr        = _v_bkf / _math.sqrt(_g_ft_s2 * bankfull["Dbkf"]) if bankfull["Dbkf"] > 0 else 0.3
+            _k_wake    = round(0.04 + 0.02 * min(_fr, 1.0), 4)
+
+            def _solve_induction(cp_val: float) -> float:
+                a = 0.25
+                for _ in range(50):
+                    f  = 4 * a * (1 - a) ** 2 - cp_val
+                    fp = 4 * (1 - a) ** 2 - 8 * a * (1 - a)
+                    if abs(fp) < 1e-12:
+                        break
+                    a -= f / fp
+                    a  = max(0.01, min(0.49, a))
+                return a
+
+            _a_ind  = _solve_induction(cp)
+            _ct     = 4 * _a_ind * (1 - _a_ind)
+            _r_ft   = turbine_diameter_ft / 2.0
+            _x_ft   = 4.0   # station spacing fixed by vessel geometry
+
+            wake_velocity_factor = 1.0 - (1.0 - _math.sqrt(max(0.0, 1.0 - _ct))) * \
+                                   (_r_ft / (_r_ft + _k_wake * _x_ft)) ** 2
+            wake_velocity_factor = round(max(0.50, min(1.00, wake_velocity_factor)), 4)
             recommendation = recommend_action(selected_depth, bankfull)
 
             est_velocity = estimate_demo_max_velocity(selected_depth, bankfull)
@@ -215,7 +208,7 @@ if run_button:
         with out2:
             st.markdown("**Array:** 3 stations × 2 turbines (port + starboard) = 6 total")
             st.write(f"**Vessel length:** 12 ft | **Beam:** 5 ft | **Station spacing:** 4 ft")
-            st.write(f"**Wake velocity factor:** {wake_velocity_factor:.2f}")
+            st.write(f"**Jensen wake model:** Fr={_fr:.3f} → k={_k_wake:.4f}, Ct={_ct:.3f}, η_wake={wake_velocity_factor:.4f}")
             stations = [1, 5, 9]
             for i, (p_w, v_ft_s) in enumerate(
                 zip(power["row_powers_watts"], power["row_velocities_ft_s"])
