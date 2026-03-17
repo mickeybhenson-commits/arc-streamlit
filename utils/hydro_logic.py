@@ -179,24 +179,132 @@ def estimate_demo_locations(
     arc_lon: float,
     depth_ft: float,
     bankfull: Dict[str, float],
-) -> Dict[str, float]:
-    dbkf  = bankfull["Dbkf"]
-    ratio = depth_ft / dbkf if dbkf > 0 else 1.0
+) -> Dict[str, Union[float, str, list]]:
+    """
+    Search a 100 ft downstream corridor (21 candidate points at 5 ft intervals)
+    for the highest-velocity deployment location.
 
-    thalweg_shift_m          = min(12.0, max(4.0, 4.0 + abs(1.0 - ratio) * 8.0))
-    stream_bearing_deg       = 35.0
+    At each candidate point, local depth is estimated using a sinusoidal
+    pool-riffle model (wavelength = 50 ft, amplitude = 20% of bankfull depth)
+    anchored to the measured depth at the ARC position.  The candidate score
+    is the estimated max velocity derived from that local depth via the same
+    regional-curve peak-factor model used elsewhere.
+
+    A cross-channel thalweg shift (4–12 m) is applied at the best-scoring
+    point to place the returned coordinates in the highest-velocity thread.
+
+    All estimates are based on regional curves only.  The Recon ASV
+    bathymetric survey will replace this with measured hydraulics.
+
+    Parameters
+    ----------
+    arc_lat, arc_lon : float
+        ARC vessel GPS position (decimal degrees).
+    depth_ft : float
+        Selected / measured water depth at the ARC position (ft).
+    bankfull : dict
+        Bankfull metrics from compute_bankfull_metrics().
+
+    Returns
+    -------
+    dict
+        arc_lat, arc_lon            : ARC position
+        max_velocity_lat/lon        : best estimated deployment coordinates
+        deployment_lat/lon          : 5 m downstream of max velocity point
+        best_candidate_distance_ft  : distance downstream of ARC to best point
+        best_candidate_depth_ft     : estimated depth at best point
+        best_candidate_score        : velocity score at best point (ft/s)
+        candidates_searched         : total candidates evaluated
+        search_note                 : description of method used
+    """
+    dbkf  = bankfull["Dbkf"]
+    qbkf  = bankfull["Qbkf"]
+    abkf  = bankfull["Abkf"]
+
+    stream_bearing_deg        = 35.0
     cross_channel_bearing_deg = 80.0
 
-    max_lat, max_lon       = forward_offset(arc_lat, arc_lon, thalweg_shift_m, cross_channel_bearing_deg)
+    # ── Pool-riffle depth model ───────────────────────────────────────────────
+    # Depth varies sinusoidally along the reach.  The ARC-measured depth
+    # anchors the phase.  Wavelength of 50 ft is typical for WNC Ecoregion 66
+    # pool-riffle sequences at bankfull widths of ~20 ft.
+    WAVELENGTH_FT = 50.0
+    AMPLITUDE_FT  = 0.20 * dbkf if dbkf > 0 else 0.10
+
+    avg_bkf_velocity = qbkf / abkf if abkf > 0 else 0.0
+
+    def _local_depth(downstream_ft: float) -> float:
+        """Sinusoidal depth variation anchored at ARC position (x=0)."""
+        phase_offset = math.asin(
+            max(-1.0, min(1.0, (depth_ft - dbkf) / AMPLITUDE_FT))
+        ) if AMPLITUDE_FT > 0 else 0.0
+        return dbkf + AMPLITUDE_FT * math.sin(
+            2.0 * math.pi * downstream_ft / WAVELENGTH_FT + phase_offset
+        )
+
+    def _velocity_score(local_depth: float) -> float:
+        """Peak velocity estimate at a given local depth (ft/s)."""
+        ratio = local_depth / dbkf if dbkf > 0 else 1.0
+        peak_factor = 0.85 + 0.45 * math.exp(-((ratio - 1.0) / 0.35) ** 2)
+        return max(0.0, avg_bkf_velocity * peak_factor)
+
+    # ── Search corridor: 0 ft to 100 ft downstream at 5 ft intervals ─────────
+    SEARCH_DISTANCE_FT = 100.0
+    STEP_FT            = 5.0
+    FT_TO_M            = 0.3048
+
+    candidates = []
+    steps = int(SEARCH_DISTANCE_FT / STEP_FT) + 1   # 0, 5, 10 … 100 → 21 points
+
+    for i in range(steps):
+        dist_ft = i * STEP_FT
+        dist_m  = dist_ft * FT_TO_M
+
+        cand_lat, cand_lon = forward_offset(
+            arc_lat, arc_lon, dist_m, stream_bearing_deg
+        )
+
+        local_depth = _local_depth(dist_ft)
+        score       = _velocity_score(local_depth)
+
+        candidates.append({
+            "distance_ft": dist_ft,
+            "lat":         cand_lat,
+            "lon":         cand_lon,
+            "depth_ft":    round(local_depth, 3),
+            "score":       round(score, 4),
+        })
+
+    # ── Select best candidate ─────────────────────────────────────────────────
+    best = max(candidates, key=lambda c: c["score"])
+
+    # Cross-channel thalweg shift at best point
+    best_ratio         = best["depth_ft"] / dbkf if dbkf > 0 else 1.0
+    thalweg_shift_m    = min(12.0, max(4.0, 4.0 + abs(1.0 - best_ratio) * 8.0))
+
+    max_lat, max_lon   = forward_offset(
+        best["lat"], best["lon"], thalweg_shift_m, cross_channel_bearing_deg
+    )
     deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 5.0, stream_bearing_deg)
 
     return {
-        "arc_lat":          arc_lat,
-        "arc_lon":          arc_lon,
-        "max_velocity_lat": max_lat,
-        "max_velocity_lon": max_lon,
-        "deployment_lat":   deploy_lat,
-        "deployment_lon":   deploy_lon,
+        "arc_lat":                   arc_lat,
+        "arc_lon":                   arc_lon,
+        "max_velocity_lat":          max_lat,
+        "max_velocity_lon":          max_lon,
+        "deployment_lat":            deploy_lat,
+        "deployment_lon":            deploy_lon,
+        "best_candidate_distance_ft": best["distance_ft"],
+        "best_candidate_depth_ft":   best["depth_ft"],
+        "best_candidate_score":      best["score"],
+        "candidates_searched":       len(candidates),
+        "search_note": (
+            f"Best location found {best['distance_ft']:.0f} ft downstream of ARC position "
+            f"(est. depth {best['depth_ft']:.2f} ft, velocity score {best['score']:.2f} ft/s). "
+            f"Searched {len(candidates)} candidates over {SEARCH_DISTANCE_FT:.0f} ft corridor "
+            f"using sinusoidal pool-riffle depth model (λ={WAVELENGTH_FT:.0f} ft, "
+            f"A=±{AMPLITUDE_FT:.2f} ft). Regional curves only — Recon ASV survey will supersede."
+        ),
     }
 
 
