@@ -234,13 +234,21 @@ if run_button:
             )
 
         # ── Max velocity XYZ ──────────────────────────────────────────────────
-        st.subheader("Estimated Max Velocity Point (x, y, z)")
-        st.code(
-            f"x = {est_locations['max_velocity_lon']:.6f}\n"
-            f"y = {est_locations['max_velocity_lat']:.6f}\n"
-            f"z = {z_from_surface:.2f} ft below surface",
-            language="text",
-        )
+        st.subheader("Estimated Best Deployment Location (x, y, z)")
+        loc1, loc2 = st.columns([1, 1])
+        with loc1:
+            st.code(
+                f"x = {est_locations['max_velocity_lon']:.6f}\n"
+                f"y = {est_locations['max_velocity_lat']:.6f}\n"
+                f"z = {z_from_surface:.2f} ft below surface",
+                language="text",
+            )
+        with loc2:
+            st.write(f"**Distance downstream of ARC:** {est_locations['best_candidate_distance_ft']:.0f} ft")
+            st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
+            st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
+            st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 100 ft)")
+        st.caption(f"⚠️ {est_locations['search_note']}")
 
         # ── Deployment map ────────────────────────────────────────────────────
         st.subheader("Deployment Map")
@@ -255,7 +263,12 @@ if run_button:
                 {
                     "lat":   est_locations["max_velocity_lat"],
                     "lon":   est_locations["max_velocity_lon"],
-                    "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
+                    "label": (
+                        f"Best Deployment Point | "
+                        f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream | "
+                        f"est. depth {est_locations['best_candidate_depth_ft']:.2f} ft | "
+                        f"z={z_from_surface:.2f} ft below surface"
+                    ),
                     "color": [255, 140, 0, 230],   # orange
                     "radius": 4,
                 },
@@ -292,7 +305,7 @@ if run_button:
 
             st.markdown(
                 '<span style="color:#FF8C00;font-weight:700;">●</span>'
-                "&nbsp; Max Velocity Point",
+                "&nbsp; Best Deployment Point (100 ft corridor search)",
                 unsafe_allow_html=True,
             )
 
