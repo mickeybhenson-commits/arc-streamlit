@@ -93,18 +93,7 @@ with st.sidebar:
 
     run_button = st.button("Run Demo Recommendation", use_container_width=True)
 
-st.markdown(
-    """
-This demo version uses:
-- default coordinates near **Cullowhee Creek / Ramsey Center**
-- preset demo depths from **0.25 ft to 6.50 ft**
-- **automatic drainage area from coordinates** when available
-- manual drainage-area fallback
-- Western North Carolina **regional curves**
-- **6-turbine array**: 3 stations (1', 5', 9') × port + starboard on a 12' × 5' vessel
-- **estimated** max velocity point, velocity, and power with wake loss modeling
-"""
-)
+
 
 if run_button:
     try:
@@ -177,7 +166,7 @@ if run_button:
             st.subheader("Hydro Context")
             st.write(f"**Latitude used:** {lat:.6f}")
             st.write(f"**Longitude used:** {lon:.6f}")
-            st.write(f"**Stream name:** {hydro.stream_name or 'Unknown'}")
+            st.write(f"**Stream name:** {hydro.stream_name or 'Unnamed stream'}")
             st.write(f"**COMID:** {hydro.comid or 'N/A'}")
             st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
             st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
@@ -232,59 +221,24 @@ if run_button:
         st.subheader("Deployment Map")
         try:
             import pydeck as pdk
-            import math
             import os
 
             MAPBOX_TOKEN = "pk.eyJ1IjoibWJoZW5zb24xOTQ1IiwiYSI6ImNtbXRrM2owaTFzencycnB5dHFvN2J5dW8ifQ.OG5D5ZFCg9XroLargRIGMg"
             os.environ["MAPBOX_API_KEY"] = MAPBOX_TOKEN
 
-            # Vessel geometry
-            VESSEL_BEAM_FT   = 5.0
-            VESSEL_LENGTH_FT = 12.0
-            stations_ft      = [1.0, 5.0, 9.0]   # bow (upstream) → stern
-
-            # Degrees per foot at ~35°N
-            ft_per_deg_lat = 364000.0
-            ft_per_deg_lon = 288200.0
-
-            lateral_offset_deg = (VESSEL_BEAM_FT / 2.0) / ft_per_deg_lat  # ±2.5 ft
-
-            row_colors = [
-                [0,   200, 255, 230],   # cyan   — Station 1' (upstream)
-                [100, 160, 255, 230],   # blue   — Station 5' (middle)
-                [255, 140,   0, 230],   # orange — Station 9' (downstream)
+            map_points = [
+                {
+                    "lat":   est_locations["max_velocity_lat"],
+                    "lon":   est_locations["max_velocity_lon"],
+                    "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
+                    "color": [255, 140, 0, 230],   # orange
+                    "radius": 4,
+                },
             ]
-
-            turbine_points = []
-            for row_idx, station_ft in enumerate(stations_ft):
-                lon_offset_deg = station_ft / ft_per_deg_lon
-                v_row   = power["row_velocities_ft_s"][row_idx]
-                p_each  = power["row_powers_watts"][row_idx] / 2.0  # per turbine
-
-                for lat_sign, side_label in [(+1, "Port"), (-1, "Stbd")]:
-                    turbine_points.append({
-                        "lat":   est_locations["deployment_lat"] + lat_sign * lateral_offset_deg,
-                        "lon":   est_locations["deployment_lon"] + lon_offset_deg,
-                        "label": (
-                            f"{side_label} | Station {station_ft:.0f}' | "
-                            f"v={v_row:.2f} ft/s | {p_each:.1f} W each"
-                        ),
-                        "color":  row_colors[row_idx],
-                        "radius": 3,
-                    })
-
-            # Max velocity reference point
-            turbine_points.append({
-                "lat":   est_locations["max_velocity_lat"],
-                "lon":   est_locations["max_velocity_lon"],
-                "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
-                "color": [255, 50, 50, 230],   # red
-                "radius": 2,
-            })
 
             scatter_layer = pdk.Layer(
                 "ScatterplotLayer",
-                data=turbine_points,
+                data=map_points,
                 get_position="[lon, lat]",
                 get_fill_color="color",
                 get_radius="radius",
@@ -311,31 +265,11 @@ if run_button:
                 use_container_width=True,
             )
 
-            col_leg1, col_leg2, col_leg3, col_leg4, _ = st.columns([1.2, 1.2, 1.4, 1.2, 1])
-            with col_leg1:
-                st.markdown(
-                    '<span style="color:#00C8FF;font-weight:700;">●</span>'
-                    "&nbsp; Station 1' (upstream)",
-                    unsafe_allow_html=True,
-                )
-            with col_leg2:
-                st.markdown(
-                    '<span style="color:#64A0FF;font-weight:700;">●</span>'
-                    "&nbsp; Station 5' (middle)",
-                    unsafe_allow_html=True,
-                )
-            with col_leg3:
-                st.markdown(
-                    '<span style="color:#FF8C00;font-weight:700;">●</span>'
-                    "&nbsp; Station 9' (downstream)",
-                    unsafe_allow_html=True,
-                )
-            with col_leg4:
-                st.markdown(
-                    '<span style="color:#FF3232;font-weight:700;">●</span>'
-                    "&nbsp; Max Velocity Point",
-                    unsafe_allow_html=True,
-                )
+            st.markdown(
+                '<span style="color:#FF8C00;font-weight:700;">●</span>'
+                "&nbsp; Max Velocity Point",
+                unsafe_allow_html=True,
+            )
 
         except Exception as map_err:
             st.warning(f"Map could not render: {map_err}")
