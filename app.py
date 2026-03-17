@@ -248,7 +248,7 @@ if run_button:
             st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
             st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
             st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 100 ft)")
-        st.caption(f"⚠️ {est_locations['search_note']}")
+
 
         # ── Deployment map ────────────────────────────────────────────────────
         st.subheader("Deployment Map")
