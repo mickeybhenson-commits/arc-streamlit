@@ -8,7 +8,7 @@ import pandas as pd
 REGIONAL_CURVES = {
     "Abkf": {"a": 22.1, "b": 0.67},
     "Wbkf": {"a": 19.9, "b": 0.36},
-    "Dbkf": {"a": 1.1, "b": 0.31},
+    "Dbkf": {"a": 1.1,  "b": 0.31},
     "Qbkf": {"a": 115.7, "b": 0.73},
 }
 
@@ -54,52 +54,56 @@ def recommend_action(depth_ft: float, bankfull: Dict[str, float]) -> Dict[str, s
     ratio = depth_ft / dbkf if dbkf > 0 else float("inf")
 
     if ratio < 0.6:
-        action = "NAVIGATE TO DEEPER WATER / DO NOT DEPLOY YET"
-        deploy = "NO"
+        action   = "NAVIGATE TO DEEPER WATER / DO NOT DEPLOY YET"
+        deploy   = "NO"
         nav_note = (
             "Measured depth is substantially below the estimated bankfull mean depth. "
             "ARC should continue searching for a deeper portion of the main thread or thalweg."
         )
     elif ratio <= 1.4:
-        action = "DEPLOY CANDIDATE"
-        deploy = "YES"
+        action   = "DEPLOY CANDIDATE"
+        deploy   = "YES"
         nav_note = (
             "Depth is in a favorable range relative to the estimated bankfull mean depth. "
             "This is a reasonable first-pass deployment candidate."
         )
     else:
-        action = "POSSIBLE DEPLOYMENT / VERIFY FLOW FIRST"
-        deploy = "MAYBE"
+        action   = "POSSIBLE DEPLOYMENT / VERIFY FLOW FIRST"
+        deploy   = "MAYBE"
         nav_note = (
             "Depth is above the estimated bankfull mean-depth value. "
             "Verify that this is active high-velocity flow rather than pooled or slower water before deploying."
         )
 
     return {
-        "deploy": deploy,
-        "action": action,
-        "score": f"{score:.1f}/100",
-        "reason": reason,
+        "deploy":   deploy,
+        "action":   action,
+        "score":    f"{score:.1f}/100",
+        "reason":   reason,
         "nav_note": nav_note,
-        "estimated_bankfull_width_ft": f"{wbkf:.2f}",
-        "estimated_bankfull_depth_ft": f"{dbkf:.2f}",
-        "estimated_bankfull_area_ft2": f"{abkf:.2f}",
-        "estimated_bankfull_discharge_cfs": f"{qbkf:.2f}",
+        "estimated_bankfull_width_ft":        f"{wbkf:.2f}",
+        "estimated_bankfull_depth_ft":        f"{dbkf:.2f}",
+        "estimated_bankfull_area_ft2":        f"{abkf:.2f}",
+        "estimated_bankfull_discharge_cfs":   f"{qbkf:.2f}",
     }
 
 
-def format_summary_table(drainage_area_sqmi: float, bankfull: Dict[str, float], depth_ft: float) -> pd.DataFrame:
-    dbkf = bankfull["Dbkf"]
+def format_summary_table(
+    drainage_area_sqmi: float,
+    bankfull: Dict[str, float],
+    depth_ft: float,
+) -> pd.DataFrame:
+    dbkf        = bankfull["Dbkf"]
     depth_ratio = depth_ft / dbkf if dbkf > 0 else None
 
     data = [
-        ["Drainage Area", drainage_area_sqmi, "mi²"],
-        ["Selected Demo Depth", depth_ft, "ft"],
-        ["Estimated Bankfull Area", bankfull["Abkf"], "ft²"],
-        ["Estimated Bankfull Width", bankfull["Wbkf"], "ft"],
-        ["Estimated Bankfull Depth", bankfull["Dbkf"], "ft"],
-        ["Estimated Bankfull Discharge", bankfull["Qbkf"], "cfs"],
-        ["Depth / Bankfull Depth Ratio", depth_ratio, "-"],
+        ["Drainage Area",                  drainage_area_sqmi,    "mi²"],
+        ["Selected Demo Depth",            depth_ft,              "ft"],
+        ["Estimated Bankfull Area",        bankfull["Abkf"],      "ft²"],
+        ["Estimated Bankfull Width",       bankfull["Wbkf"],      "ft"],
+        ["Estimated Bankfull Depth",       bankfull["Dbkf"],      "ft"],
+        ["Estimated Bankfull Discharge",   bankfull["Qbkf"],      "cfs"],
+        ["Depth / Bankfull Depth Ratio",   depth_ratio,           "-"],
     ]
 
     return pd.DataFrame(data, columns=["Metric", "Value", "Units"])
@@ -107,14 +111,17 @@ def format_summary_table(drainage_area_sqmi: float, bankfull: Dict[str, float], 
 
 def get_demo_depths() -> List[float]:
     depths = []
-    value = 0.25
+    value  = 0.25
     while value <= 6.50 + 1e-9:
         depths.append(round(value, 2))
         value += 0.25
     return depths
 
 
-def estimate_demo_max_velocity(depth_ft: float, bankfull: Dict[str, float]) -> Dict[str, Union[float, str]]:
+def estimate_demo_max_velocity(
+    depth_ft: float,
+    bankfull: Dict[str, float],
+) -> Dict[str, Union[float, str]]:
     dbkf = bankfull["Dbkf"]
     abkf = bankfull["Abkf"]
     qbkf = bankfull["Qbkf"]
@@ -139,16 +146,21 @@ def estimate_demo_max_velocity(depth_ft: float, bankfull: Dict[str, float]) -> D
 
     return {
         "estimated_max_velocity_ft_s": estimated_max_velocity_ft_s,
-        "confidence_label": confidence,
-        "note": note,
+        "confidence_label":            confidence,
+        "note":                        note,
     }
 
 
-def forward_offset(lat: float, lon: float, distance_m: float, bearing_deg: float) -> Tuple[float, float]:
+def forward_offset(
+    lat: float,
+    lon: float,
+    distance_m: float,
+    bearing_deg: float,
+) -> Tuple[float, float]:
     radius_m = 6371000.0
-    lat1 = math.radians(lat)
-    lon1 = math.radians(lon)
-    brng = math.radians(bearing_deg)
+    lat1     = math.radians(lat)
+    lon1     = math.radians(lon)
+    brng     = math.radians(bearing_deg)
 
     lat2 = math.asin(
         math.sin(lat1) * math.cos(distance_m / radius_m) +
@@ -162,38 +174,122 @@ def forward_offset(lat: float, lon: float, distance_m: float, bearing_deg: float
     return math.degrees(lat2), math.degrees(lon2)
 
 
-def estimate_demo_locations(arc_lat: float, arc_lon: float, depth_ft: float, bankfull: Dict[str, float]) -> Dict[str, float]:
-    dbkf = bankfull["Dbkf"]
+def estimate_demo_locations(
+    arc_lat: float,
+    arc_lon: float,
+    depth_ft: float,
+    bankfull: Dict[str, float],
+) -> Dict[str, float]:
+    dbkf  = bankfull["Dbkf"]
     ratio = depth_ft / dbkf if dbkf > 0 else 1.0
 
-    thalweg_shift_m = min(12.0, max(4.0, 4.0 + abs(1.0 - ratio) * 8.0))
-    stream_bearing_deg = 35.0
+    thalweg_shift_m          = min(12.0, max(4.0, 4.0 + abs(1.0 - ratio) * 8.0))
+    stream_bearing_deg       = 35.0
     cross_channel_bearing_deg = 80.0
 
-    max_lat, max_lon = forward_offset(arc_lat, arc_lon, thalweg_shift_m, cross_channel_bearing_deg)
+    max_lat, max_lon       = forward_offset(arc_lat, arc_lon, thalweg_shift_m, cross_channel_bearing_deg)
     deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 5.0, stream_bearing_deg)
 
     return {
-        "arc_lat": arc_lat,
-        "arc_lon": arc_lon,
+        "arc_lat":          arc_lat,
+        "arc_lon":          arc_lon,
         "max_velocity_lat": max_lat,
         "max_velocity_lon": max_lon,
-        "deployment_lat": deploy_lat,
-        "deployment_lon": deploy_lon,
+        "deployment_lat":   deploy_lat,
+        "deployment_lon":   deploy_lon,
     }
 
 
-def estimate_power_output(velocity_ft_s: float, turbine_diameter_ft: float, cp: float, rho: float = 1000.0) -> Dict[str, float]:
-    velocity_m_s = velocity_ft_s * 0.3048
-    diameter_m = turbine_diameter_ft * 0.3048
-    swept_area_m2 = math.pi * (diameter_m / 2.0) ** 2
-    power_watts = 0.5 * rho * swept_area_m2 * (velocity_m_s ** 3) * cp
-    power_kw = power_watts / 1000.0
+def estimate_power_output(
+    velocity_ft_s: float,
+    turbine_diameter_ft: float,
+    cp: float,
+    num_rows: int = 3,
+    turbines_per_row: int = 2,
+    wake_velocity_factor: float = 0.85,
+) -> Dict[str, Union[float, int, list]]:
+    """
+    Estimate total array power output for the NEMO 6-turbine hydrokinetic array.
+
+    Vessel configuration:
+        - 12 ft long × 5 ft wide
+        - 3 stations at 1', 5', 9' from bow (upstream end)
+        - Port and starboard turbine at each station (2 per row)
+        - Approach flow runs along the vessel long axis;
+          wake cascades station 1' → 5' → 9'
+
+    Wake model:
+        Each downstream station sees velocity reduced by wake_velocity_factor.
+        Power scales as v³, so:
+            Station 1' power factor = 1.000
+            Station 5' power factor = wake_velocity_factor³
+            Station 9' power factor = wake_velocity_factor⁶
+
+    Parameters
+    ----------
+    velocity_ft_s          : approach velocity at Station 1' (ft/s)
+    turbine_diameter_ft    : rotor diameter (ft)
+    cp                     : power coefficient (dimensionless)
+    num_rows               : number of stations along vessel length (default 3)
+    turbines_per_row       : turbines per station — port + starboard (default 2)
+    wake_velocity_factor   : fractional velocity retained by each successive
+                             downstream station (default 0.85)
+
+    Returns
+    -------
+    dict
+        power_watts              : total array power (W)
+        power_kw                 : total array power (kW)
+        num_rows                 : number of stations
+        turbines_per_row         : turbines per station
+        total_turbines           : total turbine count (num_rows × turbines_per_row)
+        wake_velocity_factor     : wake factor used
+        row_powers_watts         : per-station total power list (W), length = num_rows
+        row_velocities_ft_s      : per-station velocity list (ft/s), length = num_rows
+        single_turbine_watts     : reference power for one turbine at approach velocity (W)
+        single_turbine_kw        : same, in kW
+        swept_area_m2            : rotor swept area (m²) — backward-compatible key
+    """
+    rho_water_kg_m3 = 999.7           # kg/m³ freshwater
+
+    velocity_ms = velocity_ft_s * 0.3048
+    diameter_m  = turbine_diameter_ft * 0.3048
+    area_m2     = math.pi / 4.0 * diameter_m ** 2
+
+    def _single_turbine_watts(v_ms: float) -> float:
+        """Actuator-disk power: P = 0.5 · Cp · ρ · A · v³"""
+        return 0.5 * cp * rho_water_kg_m3 * area_m2 * v_ms ** 3
+
+    row_powers_w:      List[float] = []
+    row_velocities_fs: List[float] = []
+
+    for row_idx in range(num_rows):
+        v_row_ms   = velocity_ms * (wake_velocity_factor ** row_idx)
+        v_row_ft_s = v_row_ms / 0.3048
+        p_row_w    = turbines_per_row * _single_turbine_watts(v_row_ms)
+        row_powers_w.append(p_row_w)
+        row_velocities_fs.append(v_row_ft_s)
+
+    total_w  = sum(row_powers_w)
+    total_kw = total_w / 1000.0
 
     return {
-        "power_watts": power_watts,
-        "power_kw": power_kw,
-        "swept_area_m2": swept_area_m2,
+        # ── Scalar totals ─────────────────────────────────────────────────────
+        "power_watts": total_w,
+        "power_kw":    total_kw,
+        # ── Array configuration ───────────────────────────────────────────────
+        "num_rows":             num_rows,
+        "turbines_per_row":     turbines_per_row,
+        "total_turbines":       num_rows * turbines_per_row,
+        "wake_velocity_factor": wake_velocity_factor,
+        # ── Per-station breakdown ─────────────────────────────────────────────
+        "row_powers_watts":    row_powers_w,
+        "row_velocities_ft_s": row_velocities_fs,
+        # ── Single-turbine reference (at approach velocity) ───────────────────
+        "single_turbine_watts": _single_turbine_watts(velocity_ms),
+        "single_turbine_kw":    _single_turbine_watts(velocity_ms) / 1000.0,
+        # ── Backward-compatible key ───────────────────────────────────────────
+        "swept_area_m2": area_m2,
     }
 
 
@@ -204,33 +300,49 @@ def build_demo_scenario_table(
     bankfull: Dict[str, float],
     turbine_diameter_ft: float,
     cp: float,
+    num_rows: int = 3,
+    turbines_per_row: int = 2,
+    wake_velocity_factor: float = 0.85,
 ) -> pd.DataFrame:
+    """
+    Build a scenario table across all demo depths.
+
+    Power columns reflect the full 6-turbine array with wake losses applied.
+    Per-station breakdown is not included in the table (kept flat for export).
+    """
     rows = []
 
     for depth in depths_ft:
-        rec = recommend_action(depth, bankfull)
-        est_v = estimate_demo_max_velocity(depth, bankfull)
+        rec     = recommend_action(depth, bankfull)
+        est_v   = estimate_demo_max_velocity(depth, bankfull)
         est_loc = estimate_demo_locations(lat, lon, depth, bankfull)
-        power = estimate_power_output(
+        power   = estimate_power_output(
             velocity_ft_s=float(est_v["estimated_max_velocity_ft_s"]),
             turbine_diameter_ft=turbine_diameter_ft,
             cp=cp,
+            num_rows=num_rows,
+            turbines_per_row=turbines_per_row,
+            wake_velocity_factor=wake_velocity_factor,
         )
 
         rows.append({
-            "Depth_ft": round(depth, 2),
-            "Deploy": rec["deploy"],
-            "Score": rec["score"],
+            "Depth_ft":                    round(depth, 2),
+            "Deploy":                      rec["deploy"],
+            "Score":                       rec["score"],
             "Estimated_Max_Velocity_ft_s": round(float(est_v["estimated_max_velocity_ft_s"]), 3),
-            "Estimated_Power_W": round(power["power_watts"], 2),
-            "Estimated_Power_kW": round(power["power_kw"], 4),
-            "MaxVel_X_Lon": round(est_loc["max_velocity_lon"], 6),
-            "MaxVel_Y_Lat": round(est_loc["max_velocity_lat"], 6),
-            "MaxVel_Z_Depth_ft": round(depth, 2),
-            "Deploy_X_Lon": round(est_loc["deployment_lon"], 6),
-            "Deploy_Y_Lat": round(est_loc["deployment_lat"], 6),
+            "Array_Total_Power_W":         round(power["power_watts"], 2),
+            "Array_Total_Power_kW":        round(power["power_kw"], 4),
+            "Single_Turbine_Power_W":      round(power["single_turbine_watts"], 2),
+            "Station1_Power_W":            round(power["row_powers_watts"][0], 2),
+            "Station5_Power_W":            round(power["row_powers_watts"][1], 2),
+            "Station9_Power_W":            round(power["row_powers_watts"][2], 2),
+            "MaxVel_X_Lon":                round(est_loc["max_velocity_lon"], 6),
+            "MaxVel_Y_Lat":                round(est_loc["max_velocity_lat"], 6),
+            "MaxVel_Z_Depth_ft":           round(depth, 2),
+            "Deploy_X_Lon":                round(est_loc["deployment_lon"], 6),
+            "Deploy_Y_Lat":                round(est_loc["deployment_lat"], 6),
         })
 
     df = pd.DataFrame(rows)
-    df = df.sort_values(by="Estimated_Power_W", ascending=False).reset_index(drop=True)
+    df = df.sort_values(by="Array_Total_Power_W", ascending=False).reset_index(drop=True)
     return df
