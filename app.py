@@ -70,6 +70,25 @@ with st.sidebar:
         format="%.2f",
     )
 
+    wake_velocity_factor = st.slider(
+        "Wake velocity factor (downstream stations)",
+        min_value=0.60,
+        max_value=1.00,
+        value=0.85,
+        step=0.01,
+        format="%.2f",
+        help=(
+            "Fraction of approach velocity seen by each successive downstream station. "
+            "0.85 = 15% velocity deficit. Power scales as factor³."
+        ),
+    )
+    st.caption(
+        f"Station 5' power ≈ {wake_velocity_factor**3:.2%} of Station 1'  "
+        f"({wake_velocity_factor:.2f}³)\n\n"
+        f"Station 9' power ≈ {wake_velocity_factor**6:.2%} of Station 1'  "
+        f"({wake_velocity_factor:.2f}⁶)"
+    )
+
     show_debug = st.checkbox("Show raw lookup debug output", value=False)
 
     run_button = st.button("Run Demo Recommendation", use_container_width=True)
@@ -82,7 +101,8 @@ This demo version uses:
 - **automatic drainage area from coordinates** when available
 - manual drainage-area fallback
 - Western North Carolina **regional curves**
-- **estimated** max velocity point, velocity, and power
+- **6-turbine array**: 3 stations (1', 5', 9') × port + starboard on a 12' × 5' vessel
+- **estimated** max velocity point, velocity, and power with wake loss modeling
 """
 )
 
@@ -129,6 +149,9 @@ if run_button:
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
                 turbine_diameter_ft=turbine_diameter_ft,
                 cp=cp,
+                num_rows=3,
+                turbines_per_row=2,
+                wake_velocity_factor=wake_velocity_factor,
             )
 
         st.success("Demo recommendation computed successfully.")
@@ -161,66 +184,112 @@ if run_button:
             st.write(f"**Drainage area source:** {drainage_area_source}")
             st.write(f"**Hydro lookup notes:** {hydro.notes}")
 
-        st.subheader("Estimated Max Velocity and Deployment Outputs")
+        # ── Power Output ──────────────────────────────────────────────────────
+        st.subheader("Estimated Max Velocity and Array Power Output")
         out1, out2, out3 = st.columns(3)
+
+        # z from water surface: max velocity ~20% of depth below surface
+        # per log-law open channel velocity profile (standard hydraulics)
+        z_from_surface = round(selected_depth * 0.20, 2)
 
         with out1:
             st.write(f"**Selected Demo Depth:** {selected_depth:.2f} ft")
-            st.write(f"**Estimated Max Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
-
-        with out2:
-            st.write(f"**Estimated Power:** {power['power_watts']:.1f} W")
-            st.write(f"**Estimated Power:** {power['power_kw']:.4f} kW")
+            st.write(f"**Approach Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
             st.write(f"**Turbine diameter:** {turbine_diameter_ft:.2f} ft")
             st.write(f"**Cp:** {cp:.2f}")
 
+        with out2:
+            st.markdown("**Array:** 3 stations × 2 turbines (port + starboard) = 6 total")
+            st.write(f"**Vessel length:** 12 ft | **Beam:** 5 ft | **Station spacing:** 4 ft")
+            st.write(f"**Wake velocity factor:** {wake_velocity_factor:.2f}")
+            stations = [1, 5, 9]
+            for i, (p_w, v_ft_s) in enumerate(
+                zip(power["row_powers_watts"], power["row_velocities_ft_s"])
+            ):
+                st.write(
+                    f"**Station {stations[i]}'** (port + stbd): "
+                    f"{v_ft_s:.2f} ft/s → {p_w:.1f} W ({p_w / 1000:.4f} kW)"
+                )
+
         with out3:
-            st.write("**Estimated max velocity point (x, y, z)**")
-            # z from water surface: max velocity occurs ~20% of depth below surface
-            # per log-law open channel velocity profile (standard hydraulics)
-            z_from_surface = round(selected_depth * 0.20, 2)
-            st.code(
-                f"x = {est_locations['max_velocity_lon']:.6f}\n"
-                f"y = {est_locations['max_velocity_lat']:.6f}\n"
-                f"z = {z_from_surface:.2f} ft below surface",
-                language="text",
+            st.metric("Total Array Power", f"{power['power_watts']:.1f} W")
+            st.metric("Total Array Power (kW)", f"{power['power_kw']:.4f} kW")
+            st.write(
+                f"**Single turbine ref:** {power['single_turbine_watts']:.1f} W "
+                f"({power['single_turbine_kw']:.4f} kW)"
             )
+
+        # ── Max velocity XYZ ──────────────────────────────────────────────────
+        st.subheader("Estimated Max Velocity Point (x, y, z)")
+        st.code(
+            f"x = {est_locations['max_velocity_lon']:.6f}\n"
+            f"y = {est_locations['max_velocity_lat']:.6f}\n"
+            f"z = {z_from_surface:.2f} ft below surface",
+            language="text",
+        )
 
         # ── Deployment map ────────────────────────────────────────────────────
         st.subheader("Deployment Map")
         try:
             import pydeck as pdk
+            import math
             import os
 
-            # Set token via environment variable — most reliable across pydeck versions
             MAPBOX_TOKEN = "pk.eyJ1IjoibWJoZW5zb24xOTQ1IiwiYSI6ImNtbXRrM2owaTFzencycnB5dHFvN2J5dW8ifQ.OG5D5ZFCg9XroLargRIGMg"
             os.environ["MAPBOX_API_KEY"] = MAPBOX_TOKEN
 
-            map_points = [
-                {
-                    "lat":   est_locations["max_velocity_lat"],
-                    "lon":   est_locations["max_velocity_lon"],
-                    "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
-                    "color": [255, 140, 0, 230],   # orange
-                    "radius": 4,
-                },
-                {
-                    "lat":   est_locations["deployment_lat"],
-                    "lon":   est_locations["deployment_lon"],
-                    "label": f"ARC Deployment Point  depth={selected_depth:.2f} ft",
-                    "color": [0, 200, 255, 230],   # cyan
-                    "radius": 4,
-                },
+            # Vessel geometry
+            VESSEL_BEAM_FT   = 5.0
+            VESSEL_LENGTH_FT = 12.0
+            stations_ft      = [1.0, 5.0, 9.0]   # bow (upstream) → stern
+
+            # Degrees per foot at ~35°N
+            ft_per_deg_lat = 364000.0
+            ft_per_deg_lon = 288200.0
+
+            lateral_offset_deg = (VESSEL_BEAM_FT / 2.0) / ft_per_deg_lat  # ±2.5 ft
+
+            row_colors = [
+                [0,   200, 255, 230],   # cyan   — Station 1' (upstream)
+                [100, 160, 255, 230],   # blue   — Station 5' (middle)
+                [255, 140,   0, 230],   # orange — Station 9' (downstream)
             ]
+
+            turbine_points = []
+            for row_idx, station_ft in enumerate(stations_ft):
+                lon_offset_deg = station_ft / ft_per_deg_lon
+                v_row   = power["row_velocities_ft_s"][row_idx]
+                p_each  = power["row_powers_watts"][row_idx] / 2.0  # per turbine
+
+                for lat_sign, side_label in [(+1, "Port"), (-1, "Stbd")]:
+                    turbine_points.append({
+                        "lat":   est_locations["deployment_lat"] + lat_sign * lateral_offset_deg,
+                        "lon":   est_locations["deployment_lon"] + lon_offset_deg,
+                        "label": (
+                            f"{side_label} | Station {station_ft:.0f}' | "
+                            f"v={v_row:.2f} ft/s | {p_each:.1f} W each"
+                        ),
+                        "color":  row_colors[row_idx],
+                        "radius": 3,
+                    })
+
+            # Max velocity reference point
+            turbine_points.append({
+                "lat":   est_locations["max_velocity_lat"],
+                "lon":   est_locations["max_velocity_lon"],
+                "label": f"Max Velocity Point  z={z_from_surface:.2f} ft below surface",
+                "color": [255, 50, 50, 230],   # red
+                "radius": 2,
+            })
 
             scatter_layer = pdk.Layer(
                 "ScatterplotLayer",
-                data=map_points,
+                data=turbine_points,
                 get_position="[lon, lat]",
                 get_fill_color="color",
                 get_radius="radius",
                 radius_min_pixels=2,
-                radius_max_pixels=4,
+                radius_max_pixels=6,
                 pickable=True,
             )
 
@@ -242,17 +311,29 @@ if run_button:
                 use_container_width=True,
             )
 
-            col_leg1, col_leg2, _ = st.columns([1, 1, 4])
+            col_leg1, col_leg2, col_leg3, col_leg4, _ = st.columns([1.2, 1.2, 1.4, 1.2, 1])
             with col_leg1:
                 st.markdown(
-                    '<span style="color:#FF8C00;font-weight:700;">●</span>'
-                    '&nbsp; Max Velocity Point',
+                    '<span style="color:#00C8FF;font-weight:700;">●</span>'
+                    "&nbsp; Station 1' (upstream)",
                     unsafe_allow_html=True,
                 )
             with col_leg2:
                 st.markdown(
-                    '<span style="color:#00C8FF;font-weight:700;">●</span>'
-                    '&nbsp; ARC Deployment Point',
+                    '<span style="color:#64A0FF;font-weight:700;">●</span>'
+                    "&nbsp; Station 5' (middle)",
+                    unsafe_allow_html=True,
+                )
+            with col_leg3:
+                st.markdown(
+                    '<span style="color:#FF8C00;font-weight:700;">●</span>'
+                    "&nbsp; Station 9' (downstream)",
+                    unsafe_allow_html=True,
+                )
+            with col_leg4:
+                st.markdown(
+                    '<span style="color:#FF3232;font-weight:700;">●</span>'
+                    "&nbsp; Max Velocity Point",
                     unsafe_allow_html=True,
                 )
 
