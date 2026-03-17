@@ -68,11 +68,63 @@ def get_nldi_comid(lat: float, lon: float) -> Tuple[Optional[str], Optional[str]
         props = features[0].get("properties", {})
         comid = str(props.get("identifier") or props.get("comid") or "")
         reachcode = str(props.get("reachcode") or "")
-        stream_name = props.get("name") or props.get("gnis_name") or "Unnamed stream"
+
+        # Best-effort name from position endpoint — may be blank for small tributaries.
+        # build_hydro_context will follow up with a dedicated COMID name lookup.
+        stream_name = props.get("name") or props.get("gnis_name") or ""
 
         return comid or None, reachcode or None, stream_name or None, "NLDI position lookup succeeded"
     except Exception:
         return None, None, None, "NLDI response parse failed"
+
+
+def lookup_stream_name_from_comid(comid: str) -> str:
+    """
+    Fetch the official NHD GNIS stream name for a known COMID.
+
+    Calls the NLDI feature endpoint:
+        GET https://api.water.usgs.gov/nldi/linked-data/comid/{comid}
+
+    The returned GeoJSON feature carries a 'gnis_name' property that is
+    populated whenever the NHD has an official name for the reach.  Small
+    tributaries and ditches that have never been assigned a GNIS name will
+    return an empty string — in that case 'Unnamed stream' is returned so
+    the UI always shows a human-readable label.
+
+    Parameters
+    ----------
+    comid : str
+        NHDPlus COMID as a string.
+
+    Returns
+    -------
+    str
+        GNIS stream name, or 'Unnamed stream' if blank / lookup fails.
+    """
+    url = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}"
+    data = safe_get_json(url)
+    if not data:
+        return "Unnamed stream"
+
+    try:
+        # The endpoint returns a single GeoJSON feature (not a FeatureCollection)
+        props = data.get("properties", {})
+        name = (props.get("gnis_name") or props.get("name") or "").strip()
+        if name:
+            return name
+
+        # Some responses nest the feature inside a features array
+        features = data.get("features", [])
+        if features:
+            props = features[0].get("properties", {})
+            name = (props.get("gnis_name") or props.get("name") or "").strip()
+            if name:
+                return name
+
+    except Exception:
+        pass
+
+    return "Unnamed stream"
 
 
 def _extract_number(value: Any) -> Optional[float]:
@@ -280,8 +332,20 @@ def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[floa
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
     notes = []
 
-    comid, reachcode, stream_name, nldi_note = get_nldi_comid(lat, lon)
+    comid, reachcode, stream_name_raw, nldi_note = get_nldi_comid(lat, lon)
     notes.append(nldi_note)
+
+    # ── Stream name: dedicated COMID lookup supersedes position-endpoint name ──
+    # The position endpoint often returns a blank name for small tributaries.
+    # The /linked-data/comid/{comid} endpoint returns the full NHDPlus feature
+    # with a populated gnis_name whenever one exists in the NHD database.
+    if comid:
+        stream_name = lookup_stream_name_from_comid(comid)
+        # Fall back to whatever the position endpoint gave us (could also be blank)
+        if stream_name == "Unnamed stream" and stream_name_raw:
+            stream_name = stream_name_raw
+    else:
+        stream_name = stream_name_raw or "Unnamed stream"
 
     drainage_area_sqmi = None
     source = "No automatic drainage area available"
