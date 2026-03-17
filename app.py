@@ -166,7 +166,6 @@ if run_button:
             st.subheader("Hydro Context")
             st.write(f"**Latitude used:** {lat:.6f}")
             st.write(f"**Longitude used:** {lon:.6f}")
-            st.write(f"**Stream name:** {hydro.stream_name or 'Unnamed stream'}")
             st.write(f"**COMID:** {hydro.comid or 'N/A'}")
             st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
             st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
