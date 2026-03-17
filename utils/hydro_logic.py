@@ -249,7 +249,7 @@ def estimate_demo_locations(
         return max(0.0, avg_bkf_velocity * peak_factor)
 
     # ── Search corridor: 0 ft to 100 ft downstream at 5 ft intervals ─────────
-    SEARCH_DISTANCE_FT = 100.0
+    SEARCH_DISTANCE_FT = 300.0
     STEP_FT            = 5.0
     FT_TO_M            = 0.3048
 
