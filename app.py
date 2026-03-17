@@ -70,23 +70,49 @@ with st.sidebar:
         format="%.2f",
     )
 
-    wake_velocity_factor = st.slider(
-        "Wake velocity factor (downstream stations)",
-        min_value=0.60,
-        max_value=1.00,
-        value=0.85,
+    st.subheader("Wake Model (Jensen)")
+    k_wake = st.number_input(
+        "Wake decay coefficient, k",
+        min_value=0.01,
+        max_value=0.20,
+        value=0.05,
         step=0.01,
         format="%.2f",
         help=(
-            "Fraction of approach velocity seen by each successive downstream station. "
-            "0.85 = 15% velocity deficit. Power scales as factor³."
+            "Jensen wake decay constant for open-channel flow. "
+            "0.04–0.06 is standard for water turbine arrays. "
+            "Higher k = faster wake recovery."
         ),
     )
+
+    # ── Jensen wake model ─────────────────────────────────────────────────────
+    # Step 1: solve Cp = 4a(1-a)² for axial induction factor a (Newton-Raphson)
+    import math as _math
+    def _solve_induction(cp_val: float) -> float:
+        a = 0.25
+        for _ in range(50):
+            f  =  4 * a * (1 - a) ** 2 - cp_val
+            fp =  4 * (1 - a) ** 2 - 8 * a * (1 - a)
+            if abs(fp) < 1e-12:
+                break
+            a -= f / fp
+            a  = max(0.01, min(0.49, a))
+        return a
+
+    a_ind = _solve_induction(cp)
+    ct    = 4 * a_ind * (1 - a_ind)           # thrust coefficient
+    r_ft  = turbine_diameter_ft / 2.0          # rotor radius (ft)
+    x_ft  = 4.0                                # station spacing (ft) — fixed by vessel
+
+    # Jensen velocity ratio: V_wake/V_0 = 1 - (1 - √(1-Ct)) · (r / (r + k·x))²
+    wake_velocity_factor = 1.0 - (1.0 - _math.sqrt(max(0.0, 1.0 - ct))) * (r_ft / (r_ft + k_wake * x_ft)) ** 2
+    wake_velocity_factor = round(max(0.50, min(1.00, wake_velocity_factor)), 4)
+
     st.caption(
-        f"Station 5' power ≈ {wake_velocity_factor**3:.2%} of Station 1'  "
-        f"({wake_velocity_factor:.2f}³)\n\n"
-        f"Station 9' power ≈ {wake_velocity_factor**6:.2%} of Station 1'  "
-        f"({wake_velocity_factor:.2f}⁶)"
+        f"Cp={cp:.2f} → a={a_ind:.3f}, Ct={ct:.3f}\n\n"
+        f"**Computed η_wake = {wake_velocity_factor:.4f}**\n\n"
+        f"Station 5' power ≈ {wake_velocity_factor**3:.2%} of Station 1'\n\n"
+        f"Station 9' power ≈ {wake_velocity_factor**6:.2%} of Station 1'"
     )
 
     show_debug = st.checkbox("Show raw lookup debug output", value=False)
