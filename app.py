@@ -157,6 +157,7 @@ if run_button:
                 turbine_diameter_ft=turbine_diameter_ft,
                 reach_elevations=hydro.reach_elevations,
                 reach_distances=hydro.reach_distances,
+                downstream_bearing=hydro.downstream_bearing,
             )
             power = estimate_power_output(
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
