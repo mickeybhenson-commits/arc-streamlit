@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import json
+import math
 import requests
 
 
@@ -21,6 +23,9 @@ class HydroContext:
     notes: str
     debug_nldi_tot_excerpt: str
     debug_streamstats_excerpt: str
+    reach_elevations: Optional[List[float]] = None   # ft, sampled along downstream corridor
+    reach_distances: Optional[List[float]] = None    # ft, distance from ARC position
+    reach_slope: Optional[float] = None              # ft/ft, average reach slope
 
 
 def safe_get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -329,6 +334,99 @@ def get_streamstats_drainage_area(lat: float, lon: float) -> Tuple[Optional[floa
     return None, " | ".join(notes) if notes else "StreamStats lookup failed", "\n\n".join(excerpts)
 
 
+def _forward_offset_local(lat: float, lon: float, distance_m: float, bearing_deg: float) -> Tuple[float, float]:
+    """Haversine forward offset — duplicated here to avoid circular import."""
+    R = 6371000.0
+    lat1 = math.radians(lat)
+    lon1 = math.radians(lon)
+    brng = math.radians(bearing_deg)
+    lat2 = math.asin(
+        math.sin(lat1) * math.cos(distance_m / R) +
+        math.cos(lat1) * math.sin(distance_m / R) * math.cos(brng)
+    )
+    lon2 = lon1 + math.atan2(
+        math.sin(brng) * math.sin(distance_m / R) * math.cos(lat1),
+        math.cos(distance_m / R) - math.sin(lat1) * math.sin(lat2)
+    )
+    return math.degrees(lat2), math.degrees(lon2)
+
+
+def get_elevation_ft(lat: float, lon: float) -> Optional[float]:
+    """
+    Query USGS 3DEP Elevation Point Query Service for ground elevation.
+    Returns elevation in feet, or None on failure.
+    WNC has excellent 1m lidar coverage post-Hurricane Helene.
+    """
+    url = "https://epqs.nationalmap.gov/v1/json"
+    params = {
+        "x":           lon,
+        "y":           lat,
+        "wkid":        4326,
+        "units":       "Feet",
+        "includeDate": False,
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10,
+                            headers={"Accept": "application/json"})
+        resp.raise_for_status()
+        data = resp.json()
+        val = data.get("value") or data.get("elevation")
+        return float(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def sample_corridor_elevations(
+    arc_lat: float,
+    arc_lon: float,
+    bearing_deg: float = 155.0,
+    n_samples: int = 13,
+    total_ft: float = 300.0,
+) -> Tuple[Optional[List[float]], Optional[List[float]]]:
+    """
+    Sample ground elevations at n_samples points along the downstream corridor.
+
+    Points are spaced evenly from 0 to total_ft along bearing_deg.
+    Queries run in parallel via ThreadPoolExecutor for speed (~2–4 seconds).
+
+    Returns
+    -------
+    (distances_ft, elevations_ft) — both lists of length n_samples
+    Returns (None, None) if any elevation query fails.
+    """
+    FT_TO_M   = 0.3048
+    step_ft   = total_ft / (n_samples - 1)
+
+    sample_points: List[Tuple[float, float, float]] = []
+    for i in range(n_samples):
+        dist_ft = round(i * step_ft, 2)
+        dist_m  = dist_ft * FT_TO_M
+        s_lat, s_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, bearing_deg)
+        sample_points.append((dist_ft, s_lat, s_lon))
+
+    results: Dict[int, Optional[float]] = {}
+
+    def _fetch(idx: int, s_lat: float, s_lon: float) -> Tuple[int, Optional[float]]:
+        return idx, get_elevation_ft(s_lat, s_lon)
+
+    with ThreadPoolExecutor(max_workers=n_samples) as executor:
+        futures = {
+            executor.submit(_fetch, i, pt[1], pt[2]): i
+            for i, pt in enumerate(sample_points)
+        }
+        for future in as_completed(futures):
+            idx, elev = future.result()
+            results[idx] = elev
+
+    distances   = [sample_points[i][0] for i in range(n_samples)]
+    elevations  = [results.get(i) for i in range(n_samples)]
+
+    if any(e is None for e in elevations):
+        return None, None
+
+    return distances, elevations
+
+
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
     notes = []
 
@@ -365,6 +463,23 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
             drainage_area_sqmi = ss_drainage_area
             source = "USGS StreamStats"
 
+    # ── 3DEP elevation corridor — 13 points over 300 ft downstream ───────────
+    reach_distances, reach_elevations = sample_corridor_elevations(
+        arc_lat=lat,
+        arc_lon=lon,
+        bearing_deg=155.0,
+        n_samples=13,
+        total_ft=300.0,
+    )
+
+    reach_slope = None
+    if reach_elevations is not None and reach_distances is not None:
+        total_drop = reach_elevations[0] - reach_elevations[-1]
+        reach_slope = max(0.0, total_drop / reach_distances[-1]) if reach_distances[-1] > 0 else None
+        notes.append(f"3DEP elevation sampled: slope={reach_slope:.5f} ft/ft")
+    else:
+        notes.append("3DEP elevation sampling failed — using estimated bed profile")
+
     return HydroContext(
         drainage_area_sqmi=drainage_area_sqmi,
         comid=comid,
@@ -374,4 +489,7 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
         notes=" | ".join(notes),
         debug_nldi_tot_excerpt=debug_nldi_tot_excerpt,
         debug_streamstats_excerpt=debug_streamstats_excerpt,
+        reach_elevations=reach_elevations,
+        reach_distances=reach_distances,
+        reach_slope=reach_slope,
     )
