@@ -431,22 +431,64 @@ def sample_corridor_elevations(
 def get_downstream_bearing(
     arc_lat: float,
     arc_lon: float,
+    comid: Optional[str] = None,
     n_candidates: int = 8,
     probe_dist_ft: float = 150.0,
 ) -> float:
     """
-    Determine the downstream bearing by probing elevations in 8 compass directions
-    and returning the bearing with the greatest elevation DROP over probe_dist_ft.
-    Uses USGS 3DEP EPQS — no API key required.
-    Falls back to 155.0 if all probes fail.
+    Determine the downstream bearing using NHD flowline geometry (primary)
+    or 3DEP elevation probes constrained to ±90° of south (fallback).
+
+    NHD flowline: the LineString coordinates run UPSTREAM → DOWNSTREAM,
+    so we take the last two vertices and compute the bearing between them.
     """
+    # ── Primary: NHD flowline geometry from COMID ─────────────────────────────
+    if comid:
+        try:
+            url  = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}"
+            resp = requests.get(url, timeout=15,
+                                headers={"Accept": "application/json"})
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Extract LineString coordinates — NHD stores upstream→downstream
+            coords = None
+            geom   = data.get("geometry") or {}
+            if geom.get("type") == "LineString":
+                coords = geom["coordinates"]
+            else:
+                for feat in data.get("features", []):
+                    g = feat.get("geometry", {})
+                    if g.get("type") == "LineString":
+                        coords = g["coordinates"]
+                        break
+
+            if coords and len(coords) >= 2:
+                # Last two points = downstream end of reach
+                lon1, lat1 = coords[-2][0], coords[-2][1]
+                lon2, lat2 = coords[-1][0], coords[-1][1]
+
+                # Bearing from second-to-last → last coordinate
+                dlon  = math.radians(lon2 - lon1)
+                lat1r = math.radians(lat1)
+                lat2r = math.radians(lat2)
+                x     = math.sin(dlon) * math.cos(lat2r)
+                y     = math.cos(lat1r) * math.sin(lat2r) - \
+                        math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
+                bearing = (math.degrees(math.atan2(x, y)) + 360) % 360
+                return bearing
+        except Exception:
+            pass
+
+    # ── Fallback: elevation probes constrained to southward arc ──────────────
+    # Constrain to 90°–270° (southward half) to avoid highway embankment
     FT_TO_M  = 0.3048
     dist_m   = probe_dist_ft * FT_TO_M
     arc_elev = get_elevation_ft(arc_lat, arc_lon)
     if arc_elev is None:
-        return 155.0   # fallback
+        return 180.0
 
-    bearings = [i * (360.0 / n_candidates) for i in range(n_candidates)]
+    bearings = [90.0 + i * (180.0 / (n_candidates - 1)) for i in range(n_candidates)]
 
     def _probe(bearing: float) -> Tuple[float, Optional[float]]:
         p_lat, p_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, bearing)
@@ -458,13 +500,12 @@ def get_downstream_bearing(
         for future in as_completed(futures):
             bearing, elev = future.result()
             if elev is not None:
-                drops.append((bearing, arc_elev - elev))   # positive = downhill
+                drops.append((bearing, arc_elev - elev))
 
     if not drops:
-        return 155.0
+        return 180.0
 
-    best_bearing = max(drops, key=lambda x: x[1])[0]
-    return best_bearing
+    return max(drops, key=lambda x: x[1])[0]
 
 
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
@@ -498,8 +539,8 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
             drainage_area_sqmi = ss_drainage_area
             source = "USGS StreamStats"
 
-    # ── Auto-determine downstream bearing from 3DEP elevation probes ─────────
-    downstream_bearing = get_downstream_bearing(lat, lon)
+    # ── Auto-determine downstream bearing from NHD flowline geometry ──────────
+    downstream_bearing = get_downstream_bearing(lat, lon, comid=comid)
     notes.append(f"Downstream bearing auto-detected: {downstream_bearing:.1f}°")
 
     # ── 3DEP elevation corridor — 13 points over 300 ft downstream ───────────
