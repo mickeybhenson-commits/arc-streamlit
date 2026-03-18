@@ -12,8 +12,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT = 35.30255
-DEFAULT_LON = -83.18340
+DEFAULT_LAT = 35.301845
+DEFAULT_LON = -83.183101
 
 
 st.set_page_config(
@@ -247,61 +247,41 @@ if run_button:
         # ── Deployment map ────────────────────────────────────────────────────
         st.subheader("Deployment Map")
         try:
-            import pydeck as pdk
-            import os
+            import folium
+            from streamlit_folium import st_folium
 
-            MAPBOX_TOKEN = "pk.eyJ1IjoibWJoZW5zb24xOTQ1IiwiYSI6ImNtbXRrM2owaTFzencycnB5dHFvN2J5dW8ifQ.OG5D5ZFCg9XroLargRIGMg"
-            os.environ["MAPBOX_API_KEY"] = MAPBOX_TOKEN
-
-            map_points = [
-                {
-                    "lat":   est_locations["max_velocity_lat"],
-                    "lon":   est_locations["max_velocity_lon"],
-                    "label": (
-                        f"Best Deployment Point | "
-                        f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream | "
-                        f"est. depth {est_locations['best_candidate_depth_ft']:.2f} ft | "
-                        f"z={z_from_surface:.2f} ft below surface"
-                    ),
-                    "color": [255, 140, 0, 230],   # orange
-                    "radius": 4,
-                },
-            ]
-
-            scatter_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_points,
-                get_position="[lon, lat]",
-                get_fill_color="color",
-                get_radius="radius",
-                radius_min_pixels=2,
-                radius_max_pixels=6,
-                pickable=True,
+            m = folium.Map(
+                location=[lat, lon],
+                zoom_start=17,
+                tiles="OpenStreetMap",
             )
 
-            view = pdk.ViewState(
-                latitude=lat,
-                longitude=lon,
-                zoom=19,
-                pitch=0,
-                bearing=0,
+            # Best deployment point — orange marker
+            popup_text = (
+                f"Best Deployment Point<br>"
+                f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream<br>"
+                f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
+                f"z = {z_from_surface:.2f} ft below surface"
             )
+            folium.Marker(
+                location=[
+                    est_locations["max_velocity_lat"],
+                    est_locations["max_velocity_lon"],
+                ],
+                popup=folium.Popup(popup_text, max_width=250),
+                tooltip="Best Deployment Point",
+                icon=folium.Icon(color="orange", icon="water", prefix="fa"),
+            ).add_to(m)
 
-            st.pydeck_chart(
-                pdk.Deck(
-                    map_style="mapbox://styles/mapbox/satellite-streets-v12",
-                    initial_view_state=view,
-                    layers=[scatter_layer],
-                    tooltip={"text": "{label}"},
-                ),
-                use_container_width=True,
-            )
+            # ARC vessel position — blue marker
+            folium.Marker(
+                location=[lat, lon],
+                popup="ARC Vessel Position",
+                tooltip="ARC Position",
+                icon=folium.Icon(color="blue", icon="ship", prefix="fa"),
+            ).add_to(m)
 
-            st.markdown(
-                '<span style="color:#FF8C00;font-weight:700;">●</span>'
-                "&nbsp; Best Deployment Point (100 ft corridor search)",
-                unsafe_allow_html=True,
-            )
+            st_folium(m, use_container_width=True, height=450)
 
         except Exception as map_err:
             st.warning(f"Map could not render: {map_err}")
