@@ -323,8 +323,8 @@ def estimate_demo_locations(
             f"Best location found {best['distance_ft']:.0f} ft downstream of ARC position "
             f"(est. depth {best['depth_ft']:.2f} ft, velocity score {best['score']:.2f} ft/s). "
             f"Searched {len(candidates)} candidates over {SEARCH_DISTANCE_FT:.0f} ft corridor "
-            f"using sinusoidal pool-riffle depth model (λ={WAVELENGTH_FT:.0f} ft, "
-            f"A=±{AMPLITUDE_FT:.2f} ft). Regional curves only — Recon ASV survey will supersede."
+            f"using dual-sinusoid reach profile (λ1={WAVELENGTH1_FT:.0f} ft, "
+            f"λ2={WAVELENGTH2_FT:.0f} ft). Regional curves only — Recon ASV survey will supersede."
         ),
     }
 
