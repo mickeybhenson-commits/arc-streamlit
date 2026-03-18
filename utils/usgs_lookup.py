@@ -26,6 +26,7 @@ class HydroContext:
     reach_elevations: Optional[List[float]] = None   # ft, sampled along downstream corridor
     reach_distances: Optional[List[float]] = None    # ft, distance from ARC position
     reach_slope: Optional[float] = None              # ft/ft, average reach slope
+    downstream_bearing: float = 155.0                # degrees, auto-detected from 3DEP
 
 
 def safe_get_json(url: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -427,19 +428,53 @@ def sample_corridor_elevations(
     return distances, elevations
 
 
+def get_downstream_bearing(
+    arc_lat: float,
+    arc_lon: float,
+    n_candidates: int = 8,
+    probe_dist_ft: float = 150.0,
+) -> float:
+    """
+    Determine the downstream bearing by probing elevations in 8 compass directions
+    and returning the bearing with the greatest elevation DROP over probe_dist_ft.
+    Uses USGS 3DEP EPQS — no API key required.
+    Falls back to 155.0 if all probes fail.
+    """
+    FT_TO_M  = 0.3048
+    dist_m   = probe_dist_ft * FT_TO_M
+    arc_elev = get_elevation_ft(arc_lat, arc_lon)
+    if arc_elev is None:
+        return 155.0   # fallback
+
+    bearings = [i * (360.0 / n_candidates) for i in range(n_candidates)]
+
+    def _probe(bearing: float) -> Tuple[float, Optional[float]]:
+        p_lat, p_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, bearing)
+        return bearing, get_elevation_ft(p_lat, p_lon)
+
+    drops: List[Tuple[float, float]] = []
+    with ThreadPoolExecutor(max_workers=n_candidates) as ex:
+        futures = {ex.submit(_probe, b): b for b in bearings}
+        for future in as_completed(futures):
+            bearing, elev = future.result()
+            if elev is not None:
+                drops.append((bearing, arc_elev - elev))   # positive = downhill
+
+    if not drops:
+        return 155.0
+
+    best_bearing = max(drops, key=lambda x: x[1])[0]
+    return best_bearing
+
+
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
     notes = []
 
     comid, reachcode, stream_name_raw, nldi_note = get_nldi_comid(lat, lon)
     notes.append(nldi_note)
 
-    # ── Stream name: dedicated COMID lookup supersedes position-endpoint name ──
-    # The position endpoint often returns a blank name for small tributaries.
-    # The /linked-data/comid/{comid} endpoint returns the full NHDPlus feature
-    # with a populated gnis_name whenever one exists in the NHD database.
     if comid:
         stream_name = lookup_stream_name_from_comid(comid)
-        # Fall back to whatever the position endpoint gave us (could also be blank)
         if stream_name == "Unnamed stream" and stream_name_raw:
             stream_name = stream_name_raw
     else:
@@ -463,11 +498,15 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
             drainage_area_sqmi = ss_drainage_area
             source = "USGS StreamStats"
 
+    # ── Auto-determine downstream bearing from 3DEP elevation probes ─────────
+    downstream_bearing = get_downstream_bearing(lat, lon)
+    notes.append(f"Downstream bearing auto-detected: {downstream_bearing:.1f}°")
+
     # ── 3DEP elevation corridor — 13 points over 300 ft downstream ───────────
     reach_distances, reach_elevations = sample_corridor_elevations(
         arc_lat=lat,
         arc_lon=lon,
-        bearing_deg=155.0,
+        bearing_deg=downstream_bearing,
         n_samples=13,
         total_ft=300.0,
     )
@@ -492,4 +531,5 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
         reach_elevations=reach_elevations,
         reach_distances=reach_distances,
         reach_slope=reach_slope,
+        downstream_bearing=downstream_bearing,
     )
