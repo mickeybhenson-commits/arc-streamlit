@@ -179,6 +179,7 @@ def estimate_demo_locations(
     arc_lon: float,
     depth_ft: float,
     bankfull: Dict[str, float],
+    turbine_diameter_ft: float = 1.5,
 ) -> Dict[str, Union[float, str, list]]:
     """
     Search a 100 ft downstream corridor (21 candidate points at 5 ft intervals)
@@ -218,35 +219,55 @@ def estimate_demo_locations(
         search_note                 : description of method used
     """
     dbkf  = bankfull["Dbkf"]
-    qbkf  = bankfull["Qbkf"]
-    abkf  = bankfull["Abkf"]
 
     stream_bearing_deg        = 35.0
     cross_channel_bearing_deg = 80.0
 
-    # ── Pool-riffle depth model ───────────────────────────────────────────────
-    # Depth varies sinusoidally along the reach.  The ARC-measured depth
-    # anchors the phase.  Wavelength of 50 ft is typical for WNC Ecoregion 66
-    # pool-riffle sequences at bankfull widths of ~20 ft.
-    WAVELENGTH_FT = 50.0
-    AMPLITUDE_FT  = 0.30 * max(dbkf, depth_ft) if dbkf > 0 else 0.20
+    # ── Reach depth profile ───────────────────────────────────────────────────
+    # Two superimposed sinusoids with incommensurate wavelengths create a
+    # non-repeating pool-riffle-run profile.  The coordinate seed ensures
+    # the profile is unique to this reach location.
+    # Velocity is proportional to Q/A = Q/(W·d).  Assuming Q and W roughly
+    # constant over the short corridor, max velocity = min depth point.
+    # A depth-below-turbine-radius penalty prevents undeployable points winning.
 
-    avg_bkf_velocity = qbkf / abkf if abkf > 0 else 0.0
+    import hashlib as _hashlib
+
+    # Deterministic phase seed from coordinates (0–2π)
+    _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
+    _seed_hash = int(_hashlib.md5(_seed_str.encode()).hexdigest(), 16)
+    _phase1    = (_seed_hash % 1000) / 1000.0 * 2.0 * math.pi
+    _phase2    = ((_seed_hash // 1000) % 1000) / 1000.0 * 2.0 * math.pi
+
+    WAVELENGTH1_FT = 50.0    # primary pool-riffle spacing (WNC Ecoregion 66)
+    WAVELENGTH2_FT = 73.0    # secondary harmonic — incommensurate with W1
+    AMP1           = 0.25 * depth_ft   # ±25% of selected depth
+    AMP2           = 0.12 * depth_ft   # ±12% secondary
+
+    MIN_DEPLOY_DEPTH_FT = turbine_diameter_ft * 0.6   # minimum usable depth
 
     def _local_depth(downstream_ft: float) -> float:
-        """Sinusoidal depth variation anchored at ARC position (x=0)."""
-        phase_offset = math.asin(
-            max(-1.0, min(1.0, (depth_ft - dbkf) / AMPLITUDE_FT))
-        ) if AMPLITUDE_FT > 0 else 0.0
-        return dbkf + AMPLITUDE_FT * math.sin(
-            2.0 * math.pi * downstream_ft / WAVELENGTH_FT + phase_offset
+        return (
+            depth_ft
+            + AMP1 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH1_FT + _phase1)
+            + AMP2 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH2_FT + _phase2)
         )
 
     def _velocity_score(local_depth: float) -> float:
-        """Peak velocity estimate at a given local depth (ft/s)."""
-        ratio = local_depth / dbkf if dbkf > 0 else 1.0
-        peak_factor = 0.85 + 0.45 * math.exp(-((ratio - 1.0) / 0.35) ** 2)
-        return max(0.0, avg_bkf_velocity * peak_factor)
+        """
+        Velocity via continuity (Q constant, W constant):
+            V ∝ 1 / d
+        Scale to physical ft/s using bankfull reference:
+            V = V_bkf * (D_bkf / d)
+        Apply penalty for depths below minimum deployable.
+        """
+        if local_depth <= 0:
+            return 0.0
+        v_bkf = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
+        v_est = v_bkf * (dbkf / local_depth)
+        if local_depth < MIN_DEPLOY_DEPTH_FT:
+            v_est *= (local_depth / MIN_DEPLOY_DEPTH_FT) ** 2   # heavy penalty
+        return max(0.0, v_est)
 
     # ── Search corridor: 0 ft to 100 ft downstream at 5 ft intervals ─────────
     SEARCH_DISTANCE_FT = 300.0
