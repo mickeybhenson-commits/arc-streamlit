@@ -224,50 +224,65 @@ def estimate_demo_locations(
     cross_channel_bearing_deg = 80.0
 
     # ── Reach depth profile ───────────────────────────────────────────────────
-    # Two superimposed sinusoids with incommensurate wavelengths create a
-    # non-repeating pool-riffle-run profile.  The coordinate seed ensures
-    # the profile is unique to this reach location.
-    # Velocity is proportional to Q/A = Q/(W·d).  Assuming Q and W roughly
-    # constant over the short corridor, max velocity = min depth point.
-    # A depth-below-turbine-radius penalty prevents undeployable points winning.
+    # Bed elevation profile: two fixed sinusoids seeded by coordinates.
+    # Fixed physical amplitudes (not scaled by stage) represent real bed relief.
+    # Water surface at ARC position = depth_ft above local bed.
+    # local_depth(x) = depth_ft + bed(0) - bed(x)
+    #
+    # Composite score = velocity × depth_favorability^(1-alpha)
+    # alpha = sigmoid(depth_ft / dbkf) — low stage weights depth favorability,
+    # high stage weights velocity.  This creates a genuinely stage-dependent
+    # optimal location because the two objectives peak at different downstream
+    # distances.
 
     import hashlib as _hashlib
 
-    # Deterministic phase seed from coordinates (0–2π)
     _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
     _seed_hash = int(_hashlib.md5(_seed_str.encode()).hexdigest(), 16)
     _phase1    = (_seed_hash % 1000) / 1000.0 * 2.0 * math.pi
     _phase2    = ((_seed_hash // 1000) % 1000) / 1000.0 * 2.0 * math.pi
 
-    WAVELENGTH1_FT = 50.0    # primary pool-riffle spacing (WNC Ecoregion 66)
-    WAVELENGTH2_FT = 73.0    # secondary harmonic — incommensurate with W1
-    AMP1           = 0.25 * depth_ft   # ±25% of selected depth
-    AMP2           = 0.12 * depth_ft   # ±12% secondary
+    WAVELENGTH1_FT = 50.0    # primary pool-riffle spacing
+    WAVELENGTH2_FT = 73.0    # secondary harmonic — incommensurate
+    BED_AMP1       = 0.35    # ft — fixed physical bed relief, primary
+    BED_AMP2       = 0.18    # ft — fixed physical bed relief, secondary
 
-    MIN_DEPLOY_DEPTH_FT = turbine_diameter_ft * 0.6   # minimum usable depth
+    MIN_DEPLOY_DEPTH_FT = max(turbine_diameter_ft * 1.2, 0.5)
+
+    # Bed elevation relative to ARC position bed (positive = higher bed = shallower)
+    def _bed_rel(downstream_ft: float) -> float:
+        return (
+            BED_AMP1 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH1_FT + _phase1)
+            + BED_AMP2 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH2_FT + _phase2)
+            - BED_AMP1 * math.sin(_phase1)
+            - BED_AMP2 * math.sin(_phase2)
+        )
 
     def _local_depth(downstream_ft: float) -> float:
-        return (
-            depth_ft
-            + AMP1 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH1_FT + _phase1)
-            + AMP2 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH2_FT + _phase2)
-        )
+        return max(0.05, depth_ft - _bed_rel(downstream_ft))
+
+    # Stage-dependent blending weight (sigmoid centered at bankfull)
+    _ratio_stage = depth_ft / dbkf if dbkf > 0 else 1.0
+    _alpha       = 1.0 / (1.0 + math.exp(-4.0 * (_ratio_stage - 1.0)))
+
+    _v_bkf = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
 
     def _velocity_score(local_depth: float) -> float:
         """
-        Velocity via continuity (Q constant, W constant):
-            V ∝ 1 / d
-        Scale to physical ft/s using bankfull reference:
-            V = V_bkf * (D_bkf / d)
-        Apply penalty for depths below minimum deployable.
+        Composite score:
+          velocity component  : v = v_bkf * (dbkf / local_depth)  [continuity]
+          depth favorability  : Gaussian peak at local_depth = dbkf
+          blend weight alpha  : sigmoid of depth_ft/dbkf
+            alpha→0 at low stage  → depth favorability dominates
+            alpha→1 at high stage → velocity dominates
+        Hard cutoff below min deployable depth.
         """
-        if local_depth <= 0:
-            return 0.0
-        v_bkf = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
-        v_est = v_bkf * (dbkf / local_depth)
         if local_depth < MIN_DEPLOY_DEPTH_FT:
-            v_est *= (local_depth / MIN_DEPLOY_DEPTH_FT) ** 2   # heavy penalty
-        return max(0.0, v_est)
+            return 0.0
+        v_est        = _v_bkf * (dbkf / local_depth)
+        depth_ratio  = local_depth / dbkf if dbkf > 0 else 1.0
+        depth_favor  = math.exp(-((depth_ratio - 1.0) / 0.45) ** 2)
+        return v_est * (depth_favor ** (1.0 - _alpha))
 
     # ── Search corridor: 0 ft to 100 ft downstream at 5 ft intervals ─────────
     SEARCH_DISTANCE_FT = 300.0
