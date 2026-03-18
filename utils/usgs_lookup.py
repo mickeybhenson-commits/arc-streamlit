@@ -475,7 +475,7 @@ def get_downstream_bearing(
                 x     = math.sin(dlon) * math.cos(lat2r)
                 y     = math.cos(lat1r) * math.sin(lat2r) - \
                         math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
-                bearing = (math.degrees(math.atan2(x, y)) + 360) % 360
+                bearing = (math.degrees(math.atan2(x, y)) + 360 + 180) % 360
                 return bearing
         except Exception:
             pass
