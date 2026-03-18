@@ -220,8 +220,8 @@ def estimate_demo_locations(
     """
     dbkf  = bankfull["Dbkf"]
 
-    stream_bearing_deg        = 35.0
-    cross_channel_bearing_deg = 80.0
+    stream_bearing_deg        = 315.0   # Cullowhee Creek flows SE→NW
+    cross_channel_bearing_deg = 45.0    # perpendicular toward NE (away from parking lot)
 
     # ── Reach depth profile ───────────────────────────────────────────────────
     # Bed elevation profile: two fixed sinusoids seeded by coordinates.
