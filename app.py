@@ -80,7 +80,9 @@ with st.sidebar:
 
     run_button = st.button("Run Demo Recommendation", use_container_width=True)
 
-
+# ── Session state — persists results across map interactions / re-runs ────────
+if "results" not in st.session_state:
+    st.session_state.results = None
 
 if run_button:
     try:
@@ -163,139 +165,178 @@ if run_button:
                 wake_velocity_factor=wake_velocity_factor,
             )
 
-        st.success("Demo recommendation computed successfully.")
-
-        top1, top2 = st.columns([1, 1])
-
-        with top1:
-            st.subheader("Recommendation")
-            deploy_value = recommendation["deploy"]
-            if deploy_value == "YES":
-                st.success(f"Deploy now? {deploy_value}")
-            elif deploy_value == "MAYBE":
-                st.warning(f"Deploy now? {deploy_value}")
-            else:
-                st.error(f"Deploy now? {deploy_value}")
-
-            st.write(f"**Action:** {recommendation['action']}")
-            st.write(f"**Score:** {recommendation['score']}")
-            st.write(f"**Reason:** {recommendation['reason']}")
-            st.write(f"**ARC navigation note:** {recommendation['nav_note']}")
-
-        with top2:
-            st.subheader("Hydro Context")
-            st.write(f"**Latitude used:** {lat:.6f}")
-            st.write(f"**Longitude used:** {lon:.6f}")
-            st.write(f"**COMID:** {hydro.comid or 'N/A'}")
-            st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
-            st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
-            st.write(f"**Drainage area source:** {drainage_area_source}")
-            st.write(f"**Hydro lookup notes:** {hydro.notes}")
-
-        # ── Power Output ──────────────────────────────────────────────────────
-        st.subheader("Estimated Max Velocity and Array Power Output")
-        out1, out2, out3 = st.columns(3)
-
-        # z from water surface: max velocity ~20% of depth below surface
-        # per log-law open channel velocity profile (standard hydraulics)
-        z_from_surface = round(selected_depth * 0.20, 2)
-
-        with out1:
-            st.write(f"**Selected Demo Depth:** {selected_depth:.2f} ft")
-            st.write(f"**Approach Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
-            st.write(f"**Turbine diameter:** {turbine_diameter_ft:.2f} ft")
-            st.write(f"**Cp:** {cp:.2f}")
-
-        with out2:
-            st.markdown("**Array:** 3 stations × 2 turbines (port + starboard) = 6 total")
-            st.write(f"**Vessel length:** 12 ft | **Beam:** 5 ft | **Station spacing:** 4 ft")
-            st.write(f"**Jensen wake model:** Fr={_fr:.3f} → k={_k_wake:.4f}, Ct={_ct:.3f}, η_wake={wake_velocity_factor:.4f}")
-            stations = [1, 5, 9]
-            for i, (p_w, v_ft_s) in enumerate(
-                zip(power["row_powers_watts"], power["row_velocities_ft_s"])
-            ):
-                st.write(
-                    f"**Station {stations[i]}'** (port + stbd): "
-                    f"{v_ft_s:.2f} ft/s → {p_w:.1f} W ({p_w / 1000:.4f} kW)"
-                )
-
-        with out3:
-            st.metric("Total Array Power", f"{power['power_watts']:.1f} W")
-            st.metric("Total Array Power (kW)", f"{power['power_kw']:.4f} kW")
-            st.write(
-                f"**Single turbine ref:** {power['single_turbine_watts']:.1f} W "
-                f"({power['single_turbine_kw']:.4f} kW)"
-            )
-
-        # ── Max velocity XYZ ──────────────────────────────────────────────────
-        st.subheader("Estimated Best Deployment Location (x, y, z)")
-        loc1, loc2 = st.columns([1, 1])
-        with loc1:
-            st.code(
-                f"x = {est_locations['max_velocity_lon']:.6f}\n"
-                f"y = {est_locations['max_velocity_lat']:.6f}\n"
-                f"z = {z_from_surface:.2f} ft below surface",
-                language="text",
-            )
-        with loc2:
-            st.write(f"**Distance downstream of ARC:** {est_locations['best_candidate_distance_ft']:.0f} ft")
-            st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
-            st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
-            st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 300 ft)")
-
-
-        # ── Deployment map ────────────────────────────────────────────────────
-        st.subheader("Deployment Map")
-        try:
-            import folium
-            from streamlit_folium import st_folium
-
-            m = folium.Map(
-                location=[lat, lon],
-                zoom_start=17,
-                tiles="OpenStreetMap",
-            )
-
-            # Best deployment point — orange marker
-            popup_text = (
-                f"Best Deployment Point<br>"
-                f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream<br>"
-                f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
-                f"z = {z_from_surface:.2f} ft below surface"
-            )
-            folium.Marker(
-                location=[
-                    est_locations["max_velocity_lat"],
-                    est_locations["max_velocity_lon"],
-                ],
-                popup=folium.Popup(popup_text, max_width=250),
-                tooltip="Best Deployment Point",
-                icon=folium.Icon(color="orange", icon="water", prefix="fa"),
-            ).add_to(m)
-
-            # ARC vessel position — blue marker
-            folium.Marker(
-                location=[lat, lon],
-                popup="ARC Vessel Position",
-                tooltip="ARC Position",
-                icon=folium.Icon(color="blue", icon="ship", prefix="fa"),
-            ).add_to(m)
-
-            st_folium(m, use_container_width=True, height=450)
-
-        except Exception as map_err:
-            st.warning(f"Map could not render: {map_err}")
-
-        if show_debug:
-            st.subheader("Raw NLDI tot payload")
-            st.code(hydro.debug_nldi_tot_excerpt, language="json")
-
-            st.subheader("Raw StreamStats payload")
-            st.code(hydro.debug_streamstats_excerpt, language="json")
+            # ── Persist all results in session state ──────────────────────────
+            st.session_state.results = {
+                "hydro":                hydro,
+                "drainage_area_sqmi":   drainage_area_sqmi,
+                "drainage_area_source": drainage_area_source,
+                "bankfull":             bankfull,
+                "recommendation":       recommendation,
+                "est_velocity":         est_velocity,
+                "est_locations":        est_locations,
+                "power":                power,
+                "selected_depth":       selected_depth,
+                "lat":                  lat,
+                "lon":                  lon,
+                "turbine_diameter_ft":  turbine_diameter_ft,
+                "cp":                   cp,
+                "wake_velocity_factor": wake_velocity_factor,
+                "_fr":                  _fr,
+                "_k_wake":              _k_wake,
+                "_ct":                  _ct,
+                "show_debug":           show_debug,
+            }
 
     except Exception as e:
         st.error("The app hit an error.")
         st.code(str(e))
+
+# ── Display results from session state (survives map re-runs) ─────────────────
+if st.session_state.results:
+    r                   = st.session_state.results
+    hydro               = r["hydro"]
+    drainage_area_sqmi  = r["drainage_area_sqmi"]
+    drainage_area_source= r["drainage_area_source"]
+    bankfull            = r["bankfull"]
+    recommendation      = r["recommendation"]
+    est_velocity        = r["est_velocity"]
+    est_locations       = r["est_locations"]
+    power               = r["power"]
+    selected_depth      = r["selected_depth"]
+    lat                 = r["lat"]
+    lon                 = r["lon"]
+    turbine_diameter_ft = r["turbine_diameter_ft"]
+    cp                  = r["cp"]
+    wake_velocity_factor= r["wake_velocity_factor"]
+    _fr                 = r["_fr"]
+    _k_wake             = r["_k_wake"]
+    _ct                 = r["_ct"]
+    show_debug          = r["show_debug"]
+
+    z_from_surface = round(selected_depth * 0.20, 2)
+
+    st.success("Demo recommendation computed successfully.")
+
+    top1, top2 = st.columns([1, 1])
+
+    with top1:
+        st.subheader("Recommendation")
+        deploy_value = recommendation["deploy"]
+        if deploy_value == "YES":
+            st.success(f"Deploy now? {deploy_value}")
+        elif deploy_value == "MAYBE":
+            st.warning(f"Deploy now? {deploy_value}")
+        else:
+            st.error(f"Deploy now? {deploy_value}")
+
+        st.write(f"**Action:** {recommendation['action']}")
+        st.write(f"**Score:** {recommendation['score']}")
+        st.write(f"**Reason:** {recommendation['reason']}")
+        st.write(f"**ARC navigation note:** {recommendation['nav_note']}")
+
+    with top2:
+        st.subheader("Hydro Context")
+        st.write(f"**Latitude used:** {lat:.6f}")
+        st.write(f"**Longitude used:** {lon:.6f}")
+        st.write(f"**COMID:** {hydro.comid or 'N/A'}")
+        st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
+        st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
+        st.write(f"**Drainage area source:** {drainage_area_source}")
+        st.write(f"**Hydro lookup notes:** {hydro.notes}")
+
+    # ── Power Output ──────────────────────────────────────────────────────────
+    st.subheader("Estimated Max Velocity and Array Power Output")
+    out1, out2, out3 = st.columns(3)
+
+    with out1:
+        st.write(f"**Selected Demo Depth:** {selected_depth:.2f} ft")
+        st.write(f"**Approach Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
+        st.write(f"**Turbine diameter:** {turbine_diameter_ft:.2f} ft")
+        st.write(f"**Cp:** {cp:.2f}")
+
+    with out2:
+        st.markdown("**Array:** 3 stations × 2 turbines (port + starboard) = 6 total")
+        st.write(f"**Vessel length:** 12 ft | **Beam:** 5 ft | **Station spacing:** 4 ft")
+        st.write(f"**Jensen wake model:** Fr={_fr:.3f} → k={_k_wake:.4f}, Ct={_ct:.3f}, η_wake={wake_velocity_factor:.4f}")
+        stations = [1, 5, 9]
+        for i, (p_w, v_ft_s) in enumerate(
+            zip(power["row_powers_watts"], power["row_velocities_ft_s"])
+        ):
+            st.write(
+                f"**Station {stations[i]}'** (port + stbd): "
+                f"{v_ft_s:.2f} ft/s → {p_w:.1f} W ({p_w / 1000:.4f} kW)"
+            )
+
+    with out3:
+        st.metric("Total Array Power", f"{power['power_watts']:.1f} W")
+        st.metric("Total Array Power (kW)", f"{power['power_kw']:.4f} kW")
+        st.write(
+            f"**Single turbine ref:** {power['single_turbine_watts']:.1f} W "
+            f"({power['single_turbine_kw']:.4f} kW)"
+        )
+
+    # ── Best Deployment Location ──────────────────────────────────────────────
+    st.subheader("Estimated Best Deployment Location (x, y, z)")
+    loc1, loc2 = st.columns([1, 1])
+    with loc1:
+        st.code(
+            f"x = {est_locations['max_velocity_lon']:.6f}\n"
+            f"y = {est_locations['max_velocity_lat']:.6f}\n"
+            f"z = {z_from_surface:.2f} ft below surface",
+            language="text",
+        )
+    with loc2:
+        st.write(f"**Distance downstream of ARC:** {est_locations['best_candidate_distance_ft']:.0f} ft")
+        st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
+        st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
+        st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 300 ft)")
+
+    # ── Deployment map ────────────────────────────────────────────────────────
+    st.subheader("Deployment Map")
+    try:
+        import folium
+        from streamlit_folium import st_folium
+
+        m = folium.Map(
+            location=[lat, lon],
+            zoom_start=17,
+            tiles="OpenStreetMap",
+        )
+
+        popup_text = (
+            f"Best Deployment Point<br>"
+            f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream<br>"
+            f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
+            f"z = {z_from_surface:.2f} ft below surface"
+        )
+        folium.Marker(
+            location=[
+                est_locations["max_velocity_lat"],
+                est_locations["max_velocity_lon"],
+            ],
+            popup=folium.Popup(popup_text, max_width=250),
+            tooltip="Best Deployment Point",
+            icon=folium.Icon(color="orange", icon="water", prefix="fa"),
+        ).add_to(m)
+
+        folium.Marker(
+            location=[lat, lon],
+            popup="ARC Vessel Position",
+            tooltip="ARC Position",
+            icon=folium.Icon(color="blue", icon="ship", prefix="fa"),
+        ).add_to(m)
+
+        st_folium(m, use_container_width=True, height=450, returned_objects=[])
+
+    except Exception as map_err:
+        st.warning(f"Map could not render: {map_err}")
+
+    if show_debug:
+        st.subheader("Raw NLDI tot payload")
+        st.code(hydro.debug_nldi_tot_excerpt, language="json")
+
+        st.subheader("Raw StreamStats payload")
+        st.code(hydro.debug_streamstats_excerpt, language="json")
 
 else:
     st.info("Default coordinates are already loaded. Choose a demo depth and click Run Demo Recommendation.")
