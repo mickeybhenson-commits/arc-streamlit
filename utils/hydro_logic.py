@@ -229,7 +229,7 @@ def estimate_demo_locations(
     # anchors the phase.  Wavelength of 50 ft is typical for WNC Ecoregion 66
     # pool-riffle sequences at bankfull widths of ~20 ft.
     WAVELENGTH_FT = 50.0
-    AMPLITUDE_FT  = 0.20 * dbkf if dbkf > 0 else 0.10
+    AMPLITUDE_FT  = 0.30 * max(dbkf, depth_ft) if dbkf > 0 else 0.20
 
     avg_bkf_velocity = qbkf / abkf if abkf > 0 else 0.0
 
