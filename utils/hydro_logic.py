@@ -199,7 +199,7 @@ def estimate_demo_locations(
     dbkf  = bankfull["Dbkf"]
 
     # ── Creek geometry ────────────────────────────────────────────────────────
-    STREAM_BEARING_DEG   = 315.0   # Cullowhee Creek: SE→NW downstream
+    STREAM_BEARING_DEG   = 335.0   # Cullowhee Creek at SR 1330: runs NNW
 
     # ── Bed elevation profile — seeded by coordinates ─────────────────────────
     _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
