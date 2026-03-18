@@ -12,8 +12,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT = 35.301845
-DEFAULT_LON = -83.183101
+DEFAULT_LAT = 35.301819
+DEFAULT_LON = -83.183095
 
 
 st.set_page_config(
