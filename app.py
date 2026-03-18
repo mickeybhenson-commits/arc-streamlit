@@ -155,6 +155,8 @@ if run_button:
                 depth_ft=selected_depth,
                 bankfull=bankfull,
                 turbine_diameter_ft=turbine_diameter_ft,
+                reach_elevations=hydro.reach_elevations,
+                reach_distances=hydro.reach_distances,
             )
             power = estimate_power_output(
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
@@ -290,6 +292,7 @@ if st.session_state.results:
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 300 ft)")
+        st.caption(f"📡 {est_locations['elev_method']}")
 
     # ── Deployment map ────────────────────────────────────────────────────────
     st.subheader("Deployment Map")
