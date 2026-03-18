@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Tuple, List, Union
+from typing import Dict, List, Optional, Tuple, Union
 import pandas as pd
 
 
@@ -180,67 +180,126 @@ def estimate_demo_locations(
     depth_ft: float,
     bankfull: Dict[str, float],
     turbine_diameter_ft: float = 1.5,
+    reach_elevations: Optional[List[float]] = None,
+    reach_distances: Optional[List[float]] = None,
 ) -> Dict[str, Union[float, str, list]]:
     """
-    Search 300 ft downstream along Cullowhee Creek for the best deployment
-    location based on estimated velocity.
+    Search 300 ft downstream for the best deployment location.
 
-    Assumes ARC vessel coordinates are already IN the stream.
-    Candidates march downstream at stream_bearing.
-    A small within-channel thalweg offset (2 m) is applied at the best point —
-    no large cross-channel jump.
+    PRIMARY MODEL — Manning's equation with real 3DEP elevations (when available):
+        V = (1.486/n) · R^(2/3) · S^(1/2)
+        n = 0.045 (post-Helene WNC calibrated, Henson et al.)
+        R ≈ local_depth (wide channel)
+        S = local bed slope from centered difference on 3DEP elevations
+        local_depth = WSE(x) - bed_elev(x)
+        WSE(x) = WSE_arc - S_avg · x  (uniform flow along corridor)
 
-    Velocity model: continuity (V ∝ 1/d), blended with depth favorability
-    via stage-dependent alpha (sigmoid of depth/dbkf).
-    Bed profile: dual sinusoids seeded by coordinates — unique to this reach.
+    FALLBACK — dual sinusoid estimated bed profile when 3DEP unavailable.
+
+    Parameters
+    ----------
+    reach_elevations : list of ft elevations at reach_distances sample points
+    reach_distances  : list of ft distances from ARC (0 … 300 ft)
     """
     import hashlib as _hashlib
 
-    dbkf  = bankfull["Dbkf"]
-
-    # ── Creek geometry ────────────────────────────────────────────────────────
-    STREAM_BEARING_DEG   = 335.0   # Cullowhee Creek at SR 1330: runs NNW
-
-    # ── Bed elevation profile — seeded by coordinates ─────────────────────────
-    _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
-    _seed_hash = int(_hashlib.md5(_seed_str.encode()).hexdigest(), 16)
-    _phase1    = (_seed_hash % 1000) / 1000.0 * 2.0 * math.pi
-    _phase2    = ((_seed_hash // 1000) % 1000) / 1000.0 * 2.0 * math.pi
-
-    # Fixed bed relief amplitudes (ft) — realistic for WNC pool-riffle reach
-    BED_AMP1   = 0.35
-    BED_AMP2   = 0.18
-    WLEN1      = 50.0   # ft — primary pool-riffle spacing
-    WLEN2      = 73.0   # ft — secondary harmonic
-
-    # Bed elevation relative to ARC position (anchored to zero at x=0)
-    _bed0 = (BED_AMP1 * math.sin(_phase1) + BED_AMP2 * math.sin(_phase2))
-
-    def _local_depth(x_ft: float) -> float:
-        bed_x = (
-            BED_AMP1 * math.sin(2.0 * math.pi * x_ft / WLEN1 + _phase1)
-            + BED_AMP2 * math.sin(2.0 * math.pi * x_ft / WLEN2 + _phase2)
-        )
-        return max(0.10, depth_ft - (bed_x - _bed0))
-
-    # ── Stage-dependent composite score ───────────────────────────────────────
-    MIN_DEPTH  = max(turbine_diameter_ft * 1.2, 0.5)
-    _ratio_st  = depth_ft / dbkf if dbkf > 0 else 1.0
-    _alpha     = 1.0 / (1.0 + math.exp(-4.0 * (_ratio_st - 1.0)))
-    _v_bkf     = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
-
-    def _score(local_d: float) -> float:
-        if local_d < MIN_DEPTH:
-            return 0.0
-        v_est       = _v_bkf * (dbkf / local_d)
-        depth_fav   = math.exp(-((local_d / dbkf - 1.0) / 0.45) ** 2) if dbkf > 0 else 1.0
-        return v_est * (depth_fav ** (1.0 - _alpha))
-
-    # ── Search corridor: 0–300 ft downstream at 5 ft intervals ───────────────
+    dbkf      = bankfull["Dbkf"]
+    STREAM_BEARING_DEG = 155.0
     SEARCH_FT = 300.0
     STEP_FT   = 5.0
     FT_TO_M   = 0.3048
+    MIN_DEPTH = max(turbine_diameter_ft * 1.2, 0.5)
+    N_MANNING = 0.045   # post-Helene WNC calibrated roughness
 
+    use_real_elevations = (
+        reach_elevations is not None
+        and reach_distances is not None
+        and len(reach_elevations) >= 2
+        and all(e is not None for e in reach_elevations)
+    )
+
+    # ── Elevation interpolation ───────────────────────────────────────────────
+    if use_real_elevations:
+        def _interp_elev(x_ft: float) -> float:
+            if x_ft <= reach_distances[0]:
+                return reach_elevations[0]
+            if x_ft >= reach_distances[-1]:
+                return reach_elevations[-1]
+            for i in range(len(reach_distances) - 1):
+                if reach_distances[i] <= x_ft <= reach_distances[i + 1]:
+                    t = (x_ft - reach_distances[i]) / (reach_distances[i + 1] - reach_distances[i])
+                    return reach_elevations[i] + t * (reach_elevations[i + 1] - reach_elevations[i])
+            return reach_elevations[-1]
+
+        arc_bed_elev = _interp_elev(0.0)
+        end_bed_elev = _interp_elev(SEARCH_FT)
+        S_avg        = max(0.0001, (arc_bed_elev - end_bed_elev) / SEARCH_FT)
+        wse_arc      = arc_bed_elev + depth_ft   # water surface at ARC
+
+        def _local_depth(x_ft: float) -> float:
+            wse   = wse_arc - S_avg * x_ft        # WSE drops at average slope
+            bed   = _interp_elev(x_ft)
+            return max(0.05, wse - bed)
+
+        def _local_slope(x_ft: float) -> float:
+            dx    = 15.0
+            hi    = _interp_elev(max(0.0, x_ft - dx))
+            lo    = _interp_elev(min(SEARCH_FT, x_ft + dx))
+            return max(0.0001, (hi - lo) / (2.0 * dx))
+
+        def _score(x_ft: float) -> float:
+            d = _local_depth(x_ft)
+            if d < MIN_DEPTH:
+                return 0.0
+            S = _local_slope(x_ft)
+            # Manning's: V = (1.486/n) * R^(2/3) * S^(1/2), wide channel R ≈ d
+            return (1.486 / N_MANNING) * (d ** (2.0 / 3.0)) * (S ** 0.5)
+
+        elev_method = "USGS 3DEP 1m lidar — Manning's equation (n=0.045)"
+
+    else:
+        # ── Sinusoidal fallback ───────────────────────────────────────────────
+        _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
+        _seed_hash = int(_hashlib.md5(_seed_str.encode()).hexdigest(), 16)
+        _phase1    = (_seed_hash % 1000) / 1000.0 * 2.0 * math.pi
+        _phase2    = ((_seed_hash // 1000) % 1000) / 1000.0 * 2.0 * math.pi
+        _phase3    = ((_seed_hash // 1000000) % 1000) / 1000.0 * 2.0 * math.pi
+
+        _ratio_st  = depth_ft / dbkf if dbkf > 0 else 1.0
+        _alpha     = 1.0 / (1.0 + math.exp(-4.0 * (_ratio_st - 1.0)))
+        _v_bkf     = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
+
+        BED_AMP1 = 0.35
+        BED_AMP2 = 0.18
+        BED_AMP3 = 0.10 * max(0.0, _ratio_st - 0.5)
+        WLEN1, WLEN2, WLEN3 = 50.0, 73.0, 31.0
+
+        _bed0 = (
+            BED_AMP1 * math.sin(_phase1)
+            + BED_AMP2 * math.sin(_phase2)
+            + BED_AMP3 * math.sin(_phase3)
+        )
+
+        def _local_depth(x_ft: float) -> float:
+            bed = (
+                BED_AMP1 * math.sin(2.0 * math.pi * x_ft / WLEN1 + _phase1)
+                + BED_AMP2 * math.sin(2.0 * math.pi * x_ft / WLEN2 + _phase2)
+                + BED_AMP3 * math.sin(2.0 * math.pi * x_ft / WLEN3 + _phase3)
+            )
+            return max(0.10, depth_ft - (bed - _bed0))
+
+        def _score(x_ft: float) -> float:
+            d = _local_depth(x_ft)
+            if d < MIN_DEPTH:
+                return 0.0
+            v_est     = _v_bkf * (dbkf / d)
+            depth_fav = math.exp(-((d / dbkf - 1.0) / 0.45) ** 2) if dbkf > 0 else 1.0
+            long_bias = 1.0 + 0.003 * _alpha * x_ft
+            return v_est * (depth_fav ** (1.0 - _alpha)) * long_bias
+
+        elev_method = "Estimated sinusoidal bed profile (3DEP unavailable)"
+
+    # ── Search corridor ───────────────────────────────────────────────────────
     candidates = []
     n_steps = int(SEARCH_FT / STEP_FT) + 1
 
@@ -248,19 +307,19 @@ def estimate_demo_locations(
         x_ft  = i * STEP_FT
         x_m   = x_ft * FT_TO_M
         c_lat, c_lon = forward_offset(arc_lat, arc_lon, x_m, STREAM_BEARING_DEG)
-        local_d      = _local_depth(x_ft)
+        d     = _local_depth(x_ft)
+        sc    = _score(x_ft)
         candidates.append({
             "distance_ft": x_ft,
             "lat":         c_lat,
             "lon":         c_lon,
-            "depth_ft":    round(local_d, 3),
-            "score":       round(_score(local_d), 4),
+            "depth_ft":    round(d, 3),
+            "score":       round(sc, 4),
         })
 
     best = max(candidates, key=lambda c: c["score"])
 
-    # Deployment point: 2 m further downstream from best candidate
-    max_lat, max_lon     = best["lat"], best["lon"]
+    max_lat, max_lon       = best["lat"], best["lon"]
     deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 2.0, STREAM_BEARING_DEG)
 
     return {
@@ -274,12 +333,13 @@ def estimate_demo_locations(
         "best_candidate_depth_ft":    best["depth_ft"],
         "best_candidate_score":       best["score"],
         "candidates_searched":        len(candidates),
+        "elev_method":                elev_method,
         "search_note": (
             f"Best location {best['distance_ft']:.0f} ft downstream "
             f"(est. depth {best['depth_ft']:.2f} ft, "
-            f"velocity score {best['score']:.2f} ft/s). "
+            f"velocity {best['score']:.2f} ft/s). "
             f"{len(candidates)} candidates over {SEARCH_FT:.0f} ft. "
-            f"Regional curves only — Recon ASV survey will supersede."
+            f"Method: {elev_method}."
         ),
     }
 
