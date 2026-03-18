@@ -182,164 +182,110 @@ def estimate_demo_locations(
     turbine_diameter_ft: float = 1.5,
 ) -> Dict[str, Union[float, str, list]]:
     """
-    Search a 100 ft downstream corridor (21 candidate points at 5 ft intervals)
-    for the highest-velocity deployment location.
+    Search 300 ft downstream along Cullowhee Creek for the best deployment
+    location based on estimated velocity.
 
-    At each candidate point, local depth is estimated using a sinusoidal
-    pool-riffle model (wavelength = 50 ft, amplitude = 20% of bankfull depth)
-    anchored to the measured depth at the ARC position.  The candidate score
-    is the estimated max velocity derived from that local depth via the same
-    regional-curve peak-factor model used elsewhere.
+    Assumes ARC vessel coordinates are already IN the stream.
+    Candidates march downstream at stream_bearing.
+    A small within-channel thalweg offset (2 m) is applied at the best point —
+    no large cross-channel jump.
 
-    A cross-channel thalweg shift (4–12 m) is applied at the best-scoring
-    point to place the returned coordinates in the highest-velocity thread.
-
-    All estimates are based on regional curves only.  The Recon ASV
-    bathymetric survey will replace this with measured hydraulics.
-
-    Parameters
-    ----------
-    arc_lat, arc_lon : float
-        ARC vessel GPS position (decimal degrees).
-    depth_ft : float
-        Selected / measured water depth at the ARC position (ft).
-    bankfull : dict
-        Bankfull metrics from compute_bankfull_metrics().
-
-    Returns
-    -------
-    dict
-        arc_lat, arc_lon            : ARC position
-        max_velocity_lat/lon        : best estimated deployment coordinates
-        deployment_lat/lon          : 5 m downstream of max velocity point
-        best_candidate_distance_ft  : distance downstream of ARC to best point
-        best_candidate_depth_ft     : estimated depth at best point
-        best_candidate_score        : velocity score at best point (ft/s)
-        candidates_searched         : total candidates evaluated
-        search_note                 : description of method used
+    Velocity model: continuity (V ∝ 1/d), blended with depth favorability
+    via stage-dependent alpha (sigmoid of depth/dbkf).
+    Bed profile: dual sinusoids seeded by coordinates — unique to this reach.
     """
-    dbkf  = bankfull["Dbkf"]
-
-    stream_bearing_deg        = 315.0   # Cullowhee Creek flows SE→NW
-    cross_channel_bearing_deg = 135.0   # SE — toward creek centerline from parking lot coordinates
-
-    # ── Reach depth profile ───────────────────────────────────────────────────
-    # Bed elevation profile: two fixed sinusoids seeded by coordinates.
-    # Fixed physical amplitudes (not scaled by stage) represent real bed relief.
-    # Water surface at ARC position = depth_ft above local bed.
-    # local_depth(x) = depth_ft + bed(0) - bed(x)
-    #
-    # Composite score = velocity × depth_favorability^(1-alpha)
-    # alpha = sigmoid(depth_ft / dbkf) — low stage weights depth favorability,
-    # high stage weights velocity.  This creates a genuinely stage-dependent
-    # optimal location because the two objectives peak at different downstream
-    # distances.
-
     import hashlib as _hashlib
 
+    dbkf  = bankfull["Dbkf"]
+
+    # ── Creek geometry ────────────────────────────────────────────────────────
+    STREAM_BEARING_DEG   = 315.0   # Cullowhee Creek: SE→NW downstream
+    THALWEG_BEARING_DEG  = 45.0    # perpendicular NE — within-channel offset
+    THALWEG_OFFSET_M     = 2.0     # small within-channel thalweg shift (m)
+
+    # ── Bed elevation profile — seeded by coordinates ─────────────────────────
     _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
     _seed_hash = int(_hashlib.md5(_seed_str.encode()).hexdigest(), 16)
     _phase1    = (_seed_hash % 1000) / 1000.0 * 2.0 * math.pi
     _phase2    = ((_seed_hash // 1000) % 1000) / 1000.0 * 2.0 * math.pi
 
-    WAVELENGTH1_FT = 50.0    # primary pool-riffle spacing
-    WAVELENGTH2_FT = 73.0    # secondary harmonic — incommensurate
-    BED_AMP1       = 0.35    # ft — fixed physical bed relief, primary
-    BED_AMP2       = 0.18    # ft — fixed physical bed relief, secondary
+    # Fixed bed relief amplitudes (ft) — realistic for WNC pool-riffle reach
+    BED_AMP1   = 0.35
+    BED_AMP2   = 0.18
+    WLEN1      = 50.0   # ft — primary pool-riffle spacing
+    WLEN2      = 73.0   # ft — secondary harmonic
 
-    MIN_DEPLOY_DEPTH_FT = max(turbine_diameter_ft * 1.2, 0.5)
+    # Bed elevation relative to ARC position (anchored to zero at x=0)
+    _bed0 = (BED_AMP1 * math.sin(_phase1) + BED_AMP2 * math.sin(_phase2))
 
-    # Bed elevation relative to ARC position bed (positive = higher bed = shallower)
-    def _bed_rel(downstream_ft: float) -> float:
-        return (
-            BED_AMP1 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH1_FT + _phase1)
-            + BED_AMP2 * math.sin(2.0 * math.pi * downstream_ft / WAVELENGTH2_FT + _phase2)
-            - BED_AMP1 * math.sin(_phase1)
-            - BED_AMP2 * math.sin(_phase2)
+    def _local_depth(x_ft: float) -> float:
+        bed_x = (
+            BED_AMP1 * math.sin(2.0 * math.pi * x_ft / WLEN1 + _phase1)
+            + BED_AMP2 * math.sin(2.0 * math.pi * x_ft / WLEN2 + _phase2)
         )
+        return max(0.10, depth_ft - (bed_x - _bed0))
 
-    def _local_depth(downstream_ft: float) -> float:
-        return max(0.05, depth_ft - _bed_rel(downstream_ft))
+    # ── Stage-dependent composite score ───────────────────────────────────────
+    MIN_DEPTH  = max(turbine_diameter_ft * 1.2, 0.5)
+    _ratio_st  = depth_ft / dbkf if dbkf > 0 else 1.0
+    _alpha     = 1.0 / (1.0 + math.exp(-4.0 * (_ratio_st - 1.0)))
+    _v_bkf     = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
 
-    # Stage-dependent blending weight (sigmoid centered at bankfull)
-    _ratio_stage = depth_ft / dbkf if dbkf > 0 else 1.0
-    _alpha       = 1.0 / (1.0 + math.exp(-4.0 * (_ratio_stage - 1.0)))
-
-    _v_bkf = (bankfull["Qbkf"] / bankfull["Abkf"]) if bankfull["Abkf"] > 0 else 1.0
-
-    def _velocity_score(local_depth: float) -> float:
-        """
-        Composite score:
-          velocity component  : v = v_bkf * (dbkf / local_depth)  [continuity]
-          depth favorability  : Gaussian peak at local_depth = dbkf
-          blend weight alpha  : sigmoid of depth_ft/dbkf
-            alpha→0 at low stage  → depth favorability dominates
-            alpha→1 at high stage → velocity dominates
-        Hard cutoff below min deployable depth.
-        """
-        if local_depth < MIN_DEPLOY_DEPTH_FT:
+    def _score(local_d: float) -> float:
+        if local_d < MIN_DEPTH:
             return 0.0
-        v_est        = _v_bkf * (dbkf / local_depth)
-        depth_ratio  = local_depth / dbkf if dbkf > 0 else 1.0
-        depth_favor  = math.exp(-((depth_ratio - 1.0) / 0.45) ** 2)
-        return v_est * (depth_favor ** (1.0 - _alpha))
+        v_est       = _v_bkf * (dbkf / local_d)
+        depth_fav   = math.exp(-((local_d / dbkf - 1.0) / 0.45) ** 2) if dbkf > 0 else 1.0
+        return v_est * (depth_fav ** (1.0 - _alpha))
 
-    # ── Search corridor: 0 ft to 100 ft downstream at 5 ft intervals ─────────
-    SEARCH_DISTANCE_FT = 300.0
-    STEP_FT            = 5.0
-    FT_TO_M            = 0.3048
+    # ── Search corridor: 0–300 ft downstream at 5 ft intervals ───────────────
+    SEARCH_FT = 300.0
+    STEP_FT   = 5.0
+    FT_TO_M   = 0.3048
 
     candidates = []
-    steps = int(SEARCH_DISTANCE_FT / STEP_FT) + 1   # 0, 5, 10 … 100 → 21 points
+    n_steps = int(SEARCH_FT / STEP_FT) + 1
 
-    for i in range(steps):
-        dist_ft = i * STEP_FT
-        dist_m  = dist_ft * FT_TO_M
-
-        cand_lat, cand_lon = forward_offset(
-            arc_lat, arc_lon, dist_m, stream_bearing_deg
-        )
-
-        local_depth = _local_depth(dist_ft)
-        score       = _velocity_score(local_depth)
-
+    for i in range(n_steps):
+        x_ft  = i * STEP_FT
+        x_m   = x_ft * FT_TO_M
+        c_lat, c_lon = forward_offset(arc_lat, arc_lon, x_m, STREAM_BEARING_DEG)
+        local_d      = _local_depth(x_ft)
         candidates.append({
-            "distance_ft": dist_ft,
-            "lat":         cand_lat,
-            "lon":         cand_lon,
-            "depth_ft":    round(local_depth, 3),
-            "score":       round(score, 4),
+            "distance_ft": x_ft,
+            "lat":         c_lat,
+            "lon":         c_lon,
+            "depth_ft":    round(local_d, 3),
+            "score":       round(_score(local_d), 4),
         })
 
-    # ── Select best candidate ─────────────────────────────────────────────────
     best = max(candidates, key=lambda c: c["score"])
 
-    # Cross-channel thalweg shift at best point
-    best_ratio         = best["depth_ft"] / dbkf if dbkf > 0 else 1.0
-    thalweg_shift_m    = min(35.0, max(20.0, 20.0 + abs(1.0 - best_ratio) * 15.0))
-
-    max_lat, max_lon   = forward_offset(
-        best["lat"], best["lon"], thalweg_shift_m, cross_channel_bearing_deg
+    # Small within-channel thalweg offset at best point
+    max_lat, max_lon = forward_offset(
+        best["lat"], best["lon"], THALWEG_OFFSET_M, THALWEG_BEARING_DEG
     )
-    deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 5.0, stream_bearing_deg)
+
+    # Deployment point: 2 m further downstream from max velocity point
+    deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 2.0, STREAM_BEARING_DEG)
 
     return {
-        "arc_lat":                   arc_lat,
-        "arc_lon":                   arc_lon,
-        "max_velocity_lat":          max_lat,
-        "max_velocity_lon":          max_lon,
-        "deployment_lat":            deploy_lat,
-        "deployment_lon":            deploy_lon,
+        "arc_lat":                    arc_lat,
+        "arc_lon":                    arc_lon,
+        "max_velocity_lat":           max_lat,
+        "max_velocity_lon":           max_lon,
+        "deployment_lat":             deploy_lat,
+        "deployment_lon":             deploy_lon,
         "best_candidate_distance_ft": best["distance_ft"],
-        "best_candidate_depth_ft":   best["depth_ft"],
-        "best_candidate_score":      best["score"],
-        "candidates_searched":       len(candidates),
+        "best_candidate_depth_ft":    best["depth_ft"],
+        "best_candidate_score":       best["score"],
+        "candidates_searched":        len(candidates),
         "search_note": (
-            f"Best location found {best['distance_ft']:.0f} ft downstream of ARC position "
-            f"(est. depth {best['depth_ft']:.2f} ft, velocity score {best['score']:.2f} ft/s). "
-            f"Searched {len(candidates)} candidates over {SEARCH_DISTANCE_FT:.0f} ft corridor "
-            f"using dual-sinusoid reach profile (λ1={WAVELENGTH1_FT:.0f} ft, "
-            f"λ2={WAVELENGTH2_FT:.0f} ft). Regional curves only — Recon ASV survey will supersede."
+            f"Best location {best['distance_ft']:.0f} ft downstream "
+            f"(est. depth {best['depth_ft']:.2f} ft, "
+            f"velocity score {best['score']:.2f} ft/s). "
+            f"{len(candidates)} candidates over {SEARCH_FT:.0f} ft. "
+            f"Regional curves only — Recon ASV survey will supersede."
         ),
     }
 
