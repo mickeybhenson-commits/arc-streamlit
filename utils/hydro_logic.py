@@ -182,6 +182,7 @@ def estimate_demo_locations(
     turbine_diameter_ft: float = 1.5,
     reach_elevations: Optional[List[float]] = None,
     reach_distances: Optional[List[float]] = None,
+    downstream_bearing: float = 155.0,
 ) -> Dict[str, Union[float, str, list]]:
     """
     Search 300 ft downstream for the best deployment location.
@@ -204,7 +205,7 @@ def estimate_demo_locations(
     import hashlib as _hashlib
 
     dbkf      = bankfull["Dbkf"]
-    STREAM_BEARING_DEG = 155.0
+    STREAM_BEARING_DEG = downstream_bearing   # auto-detected from 3DEP elevation probes
     SEARCH_FT = 300.0
     STEP_FT   = 5.0
     FT_TO_M   = 0.3048
