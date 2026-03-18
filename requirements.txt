@@ -1,5 +1,7 @@
 streamlit
 requests
+pandas
 folium
 streamlit-folium
-pandas
+pydeck
+plotly
