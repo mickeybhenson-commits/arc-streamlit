@@ -200,8 +200,6 @@ def estimate_demo_locations(
 
     # ── Creek geometry ────────────────────────────────────────────────────────
     STREAM_BEARING_DEG   = 315.0   # Cullowhee Creek: SE→NW downstream
-    THALWEG_BEARING_DEG  = 45.0    # perpendicular NE — within-channel offset
-    THALWEG_OFFSET_M     = 2.0     # small within-channel thalweg shift (m)
 
     # ── Bed elevation profile — seeded by coordinates ─────────────────────────
     _seed_str  = f"{arc_lat:.5f}{arc_lon:.5f}"
@@ -261,12 +259,8 @@ def estimate_demo_locations(
 
     best = max(candidates, key=lambda c: c["score"])
 
-    # Small within-channel thalweg offset at best point
-    max_lat, max_lon = forward_offset(
-        best["lat"], best["lon"], THALWEG_OFFSET_M, THALWEG_BEARING_DEG
-    )
-
-    # Deployment point: 2 m further downstream from max velocity point
+    # Deployment point: 2 m further downstream from best candidate
+    max_lat, max_lon     = best["lat"], best["lon"]
     deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 2.0, STREAM_BEARING_DEG)
 
     return {
