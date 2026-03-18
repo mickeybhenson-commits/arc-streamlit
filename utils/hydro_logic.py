@@ -318,7 +318,11 @@ def estimate_demo_locations(
             "score":       round(sc, 4),
         })
 
-    best = max(candidates, key=lambda c: c["score"])
+    best = max(
+        (c for c in candidates if c["distance_ft"] >= 25.0),
+        key=lambda c: c["score"],
+        default=candidates[-1],
+    )
 
     max_lat, max_lon       = best["lat"], best["lon"]
     deploy_lat, deploy_lon = forward_offset(max_lat, max_lon, 2.0, STREAM_BEARING_DEG)
