@@ -152,6 +152,7 @@ if run_button:
                 arc_lon=lon,
                 depth_ft=selected_depth,
                 bankfull=bankfull,
+                turbine_diameter_ft=turbine_diameter_ft,
             )
             power = estimate_power_output(
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
