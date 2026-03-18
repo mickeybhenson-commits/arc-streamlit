@@ -539,9 +539,13 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
             drainage_area_sqmi = ss_drainage_area
             source = "USGS StreamStats"
 
-    # ── Auto-determine downstream bearing from NHD flowline geometry ──────────
-    downstream_bearing = get_downstream_bearing(lat, lon, comid=comid)
-    notes.append(f"Downstream bearing auto-detected: {downstream_bearing:.1f}°")
+    # ── Downstream bearing — calibrated for Cullowhee Creek at SR 1330 ────────
+    # 155° (SSE) confirmed correct by field observation.
+    # Auto-detection via NHD flowline or elevation probes proved unreliable
+    # at this location due to highway embankment interference and NHD
+    # coordinate ambiguity. Recon ASV will provide GPS track for calibration.
+    downstream_bearing = 155.0
+    notes.append(f"Downstream bearing: {downstream_bearing:.1f}° (calibrated)")
 
     # ── 3DEP elevation corridor — 13 points over 300 ft downstream ───────────
     reach_distances, reach_elevations = sample_corridor_elevations(
