@@ -221,7 +221,7 @@ def estimate_demo_locations(
     dbkf  = bankfull["Dbkf"]
 
     stream_bearing_deg        = 315.0   # Cullowhee Creek flows SE→NW
-    cross_channel_bearing_deg = 90.0    # due east — toward creek centerline
+    cross_channel_bearing_deg = 135.0   # SE — toward creek centerline from parking lot coordinates
 
     # ── Reach depth profile ───────────────────────────────────────────────────
     # Bed elevation profile: two fixed sinusoids seeded by coordinates.
@@ -316,7 +316,7 @@ def estimate_demo_locations(
 
     # Cross-channel thalweg shift at best point
     best_ratio         = best["depth_ft"] / dbkf if dbkf > 0 else 1.0
-    thalweg_shift_m    = min(4.0, max(1.0, 1.0 + abs(1.0 - best_ratio) * 3.0))
+    thalweg_shift_m    = min(35.0, max(20.0, 20.0 + abs(1.0 - best_ratio) * 15.0))
 
     max_lat, max_lon   = forward_offset(
         best["lat"], best["lon"], thalweg_shift_m, cross_channel_bearing_deg
