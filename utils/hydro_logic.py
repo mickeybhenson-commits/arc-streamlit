@@ -183,9 +183,10 @@ def estimate_demo_locations(
     reach_elevations: Optional[List[float]] = None,
     reach_distances: Optional[List[float]] = None,
     downstream_bearing: float = 155.0,
+    search_distance_ft: float = 300.0,
 ) -> Dict[str, Union[float, str, list]]:
     """
-    Search 300 ft downstream for the best deployment location.
+    Search downstream from the upper boundary for the best deployment location.
 
     PRIMARY MODEL — Manning's equation with real 3DEP elevations (when available):
         V = (1.486/n) · R^(2/3) · S^(1/2)
@@ -199,14 +200,16 @@ def estimate_demo_locations(
 
     Parameters
     ----------
-    reach_elevations : list of ft elevations at reach_distances sample points
-    reach_distances  : list of ft distances from ARC (0 … 300 ft)
+    arc_lat, arc_lon     : upper boundary coordinates
+    reach_elevations     : list of ft elevations at reach_distances sample points
+    reach_distances      : list of ft distances from upper boundary
+    search_distance_ft   : how far downstream to search (default 300 ft)
     """
     import hashlib as _hashlib
 
     dbkf      = bankfull["Dbkf"]
     STREAM_BEARING_DEG = downstream_bearing   # auto-detected from 3DEP elevation probes
-    SEARCH_FT = 300.0
+    SEARCH_FT = float(search_distance_ft)
     STEP_FT   = 5.0
     FT_TO_M   = 0.3048
     MIN_DEPTH = max(turbine_diameter_ft * 1.2, 0.5)
@@ -235,7 +238,7 @@ def estimate_demo_locations(
         arc_bed_elev = _interp_elev(0.0)
         end_bed_elev = _interp_elev(SEARCH_FT)
         S_avg        = max(0.0001, (arc_bed_elev - end_bed_elev) / SEARCH_FT)
-        wse_arc      = arc_bed_elev + depth_ft   # water surface at ARC
+        wse_arc      = arc_bed_elev + depth_ft   # water surface at upper boundary
 
         def _local_depth(x_ft: float) -> float:
             wse   = wse_arc - S_avg * x_ft        # WSE drops at average slope
@@ -340,7 +343,7 @@ def estimate_demo_locations(
         "candidates_searched":        len(candidates),
         "elev_method":                elev_method,
         "search_note": (
-            f"Best location {best['distance_ft']:.0f} ft downstream "
+            f"Best location {best['distance_ft']:.0f} ft downstream of upper boundary "
             f"(est. depth {best['depth_ft']:.2f} ft, "
             f"velocity {best['score']:.2f} ft/s). "
             f"{len(candidates)} candidates over {SEARCH_FT:.0f} ft. "
