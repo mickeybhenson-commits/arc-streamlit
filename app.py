@@ -5,15 +5,16 @@ from utils.hydro_logic import (
     compute_bankfull_metrics,
     recommend_action,
     format_summary_table,
-    get_demo_depths,
     estimate_demo_max_velocity,
     estimate_demo_locations,
     estimate_power_output,
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT = 35.301819
-DEFAULT_LON = -83.183095
+DEFAULT_LAT = 35.3064145
+DEFAULT_LON = -83.1849173
+DEFAULT_SEARCH_DISTANCE_M = 50  # vessel sweeps up to 50 m downstream of upper boundary
+M_TO_FT = 3.28084
 
 
 st.set_page_config(
@@ -23,16 +24,31 @@ st.set_page_config(
 )
 
 st.title("ARC Hydrokinetic Deployment Advisor")
-st.caption("Stable demo mode with preset water depths from 0.25 ft to 6.50 ft near Cullowhee Creek / Ramsey Center.")
+st.caption(
+    "Stable demo mode with preset water depths from 0.50 ft to 12.00 ft (flood stage ≈ 12 ft). "
+    "Upper boundary set near Cullowhee Creek — vessel searches downstream within the configured range to detect max velocity."
+)
 
 with st.sidebar:
     st.header("Inputs")
 
-    st.write("Default coordinates are preset near Cullowhee Creek by the Ramsey Center area.")
-    lat = st.number_input("Latitude", value=DEFAULT_LAT, format="%.6f")
-    lon = st.number_input("Longitude", value=DEFAULT_LON, format="%.6f")
+    st.write("Upper boundary of deployment zone on Cullowhee Creek. Vessel sweeps downstream to detect max velocity.")
+    lat = st.number_input("Upper Boundary Latitude", value=DEFAULT_LAT, format="%.6f")
+    lon = st.number_input("Upper Boundary Longitude", value=DEFAULT_LON, format="%.6f")
 
-    demo_depths = get_demo_depths()
+    st.subheader("Search Range")
+    search_distance_m = st.number_input(
+        "Downstream search distance (m)",
+        min_value=10,
+        max_value=200,
+        value=DEFAULT_SEARCH_DISTANCE_M,
+        step=10,
+    )
+    search_distance_ft = round(search_distance_m * M_TO_FT, 1)
+    st.caption(f"≈ {search_distance_ft:.0f} ft — vessel evaluates candidates every 5 ft within this range")
+
+    # Depth range: 0.50 ft to 12.00 ft (flood stage ≈ 12 ft), 0.25 ft increments
+    demo_depths = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
     default_depth = 2.00
     default_index = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
 
@@ -158,6 +174,7 @@ if run_button:
                 reach_elevations=hydro.reach_elevations,
                 reach_distances=hydro.reach_distances,
                 downstream_bearing=hydro.downstream_bearing,
+                search_distance_ft=search_distance_ft,
             )
             power = estimate_power_output(
                 velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
@@ -188,6 +205,8 @@ if run_button:
                 "_k_wake":              _k_wake,
                 "_ct":                  _ct,
                 "show_debug":           show_debug,
+                "search_distance_m":    search_distance_m,
+                "search_distance_ft":   search_distance_ft,
             }
 
     except Exception as e:
@@ -215,6 +234,8 @@ if st.session_state.results:
     _k_wake             = r["_k_wake"]
     _ct                 = r["_ct"]
     show_debug          = r["show_debug"]
+    search_distance_m   = r["search_distance_m"]
+    search_distance_ft  = r["search_distance_ft"]
 
     z_from_surface = round(selected_depth * 0.20, 2)
 
@@ -239,8 +260,8 @@ if st.session_state.results:
 
     with top2:
         st.subheader("Hydro Context")
-        st.write(f"**Latitude used:** {lat:.6f}")
-        st.write(f"**Longitude used:** {lon:.6f}")
+        st.write(f"**Upper boundary (lat, lon):** {lat:.6f}, {lon:.6f}")
+        st.write(f"**Downstream search range:** {search_distance_m} m ({search_distance_ft:.0f} ft)")
         st.write(f"**COMID:** {hydro.comid or 'N/A'}")
         st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
         st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
@@ -289,10 +310,10 @@ if st.session_state.results:
             language="text",
         )
     with loc2:
-        st.write(f"**Distance downstream of ARC:** {est_locations['best_candidate_distance_ft']:.0f} ft")
+        st.write(f"**Distance downstream of upper boundary:** {est_locations['best_candidate_distance_ft']:.0f} ft")
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
-        st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over 300 ft)")
+        st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
     # ── Deployment map ────────────────────────────────────────────────────────
@@ -309,7 +330,7 @@ if st.session_state.results:
 
         popup_text = (
             f"Best Deployment Point<br>"
-            f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream<br>"
+            f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
             f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
             f"z = {z_from_surface:.2f} ft below surface"
         )
@@ -319,15 +340,15 @@ if st.session_state.results:
                 est_locations["max_velocity_lon"],
             ],
             popup=folium.Popup(popup_text, max_width=250),
-            tooltip="Best Deployment Point",
+            tooltip="Best Deployment Point (max velocity)",
             icon=folium.Icon(color="orange", icon="water", prefix="fa"),
         ).add_to(m)
 
         folium.Marker(
             location=[lat, lon],
-            popup="ARC Vessel Position",
-            tooltip="ARC Position",
-            icon=folium.Icon(color="blue", icon="ship", prefix="fa"),
+            popup=f"Upper Boundary — vessel searches {search_distance_m} m downstream",
+            tooltip="Upper Boundary",
+            icon=folium.Icon(color="green", icon="flag", prefix="fa"),
         ).add_to(m)
 
         st_folium(m, use_container_width=True, height=450, returned_objects=[])
@@ -343,4 +364,4 @@ if st.session_state.results:
         st.code(hydro.debug_streamstats_excerpt, language="json")
 
 else:
-    st.info("Default coordinates are already loaded. Choose a demo depth and click Run Demo Recommendation.")
+    st.info("Upper boundary coordinates are loaded. Choose a demo depth and click Run Demo Recommendation.")
