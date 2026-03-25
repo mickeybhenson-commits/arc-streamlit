@@ -12,6 +12,11 @@ REGIONAL_CURVES = {
     "Qbkf": {"a": 115.7, "b": 0.73},
 }
 
+# ── Operational depth thresholds (ft) ─────────────────────────────────────────
+MIN_DEPLOY_DEPTH_FT  =  2.00   # minimum depth for safe turbine deployment
+HIGH_WATER_DEPTH_FT  = 10.00   # above this, verify conditions before deploying
+FLOOD_STAGE_DEPTH_FT = 12.00   # at or above flood stage — do not deploy
+
 
 def regional_curve(a: float, b: float, drainage_area_sqmi: float) -> float:
     return a * (drainage_area_sqmi ** b)
@@ -25,54 +30,100 @@ def compute_bankfull_metrics(drainage_area_sqmi: float) -> Dict[str, float]:
 
 
 def compute_hydrokinetic_score(depth_ft: float, dbkf_ft: float) -> Tuple[float, str]:
+    """Score the hydrokinetic suitability of a given depth.
+
+    Scoring uses practical operational thresholds rather than bankfull ratio
+    alone, because depths well above bankfull are common and desirable for
+    energy capture — the concern is only at flood stage.
+    """
     if dbkf_ft <= 0:
         return 0.0, "Invalid bankfull depth estimate."
 
     ratio = depth_ft / dbkf_ft
-    score = max(0.0, 100.0 - (abs(ratio - 1.0) * 80.0))
 
-    if ratio < 0.6:
-        reason = f"Too shallow relative to estimated bankfull mean depth (depth_ratio={ratio:.2f})."
-    elif ratio <= 1.4:
-        reason = f"Depth is within a favorable range relative to estimated bankfull mean depth (depth_ratio={ratio:.2f})."
-    else:
+    # ── Practical threshold scoring ───────────────────────────────────────────
+    if depth_ft < MIN_DEPLOY_DEPTH_FT:
+        score  = max(0.0, (depth_ft / MIN_DEPLOY_DEPTH_FT) * 40.0)
         reason = (
-            f"Depth exceeds the bankfull mean-depth estimate; "
-            f"may still be usable, but verify true velocity and position in the active channel (depth_ratio={ratio:.2f})."
+            f"Too shallow for safe turbine deployment "
+            f"(depth={depth_ft:.2f} ft < {MIN_DEPLOY_DEPTH_FT:.2f} ft minimum, "
+            f"depth_ratio={ratio:.2f})."
+        )
+    elif depth_ft <= HIGH_WATER_DEPTH_FT:
+        # Best operating window — score 70–100 scaled by depth within the range
+        frac   = (depth_ft - MIN_DEPLOY_DEPTH_FT) / (HIGH_WATER_DEPTH_FT - MIN_DEPLOY_DEPTH_FT)
+        score  = 70.0 + 30.0 * math.exp(-((frac - 0.4) / 0.5) ** 2)
+        reason = (
+            f"Depth is within the operational deployment window "
+            f"({MIN_DEPLOY_DEPTH_FT:.0f}–{HIGH_WATER_DEPTH_FT:.0f} ft, "
+            f"depth_ratio={ratio:.2f})."
+        )
+    elif depth_ft < FLOOD_STAGE_DEPTH_FT:
+        score  = 50.0 - 20.0 * ((depth_ft - HIGH_WATER_DEPTH_FT)
+                                 / (FLOOD_STAGE_DEPTH_FT - HIGH_WATER_DEPTH_FT))
+        reason = (
+            f"Depth is approaching flood stage; verify active high-velocity flow "
+            f"and safe navigation before deploying "
+            f"(depth_ratio={ratio:.2f})."
+        )
+    else:
+        score  = 10.0
+        reason = (
+            f"Depth is at or above flood stage ({FLOOD_STAGE_DEPTH_FT:.0f} ft). "
+            f"Do not deploy — unsafe conditions (depth_ratio={ratio:.2f})."
         )
 
-    return score, reason
+    return round(score, 1), reason
 
 
 def recommend_action(depth_ft: float, bankfull: Dict[str, float]) -> Dict[str, str]:
+    """Deployment recommendation based on practical operational depth thresholds.
+
+    Decision logic
+    --------------
+    depth < 2.00 ft  → NO   — too shallow for turbine clearance
+    2.00–10.00 ft    → YES  — good operational window for demo deployment
+    10.00–12.00 ft   → MAYBE — approaching flood stage, verify conditions
+    ≥ 12.00 ft       → NO   — flood stage, unsafe
+    """
     dbkf = bankfull["Dbkf"]
     wbkf = bankfull["Wbkf"]
     qbkf = bankfull["Qbkf"]
     abkf = bankfull["Abkf"]
 
     score, reason = compute_hydrokinetic_score(depth_ft, dbkf)
-    ratio = depth_ft / dbkf if dbkf > 0 else float("inf")
 
-    if ratio < 0.6:
+    if depth_ft < MIN_DEPLOY_DEPTH_FT:
         action   = "NAVIGATE TO DEEPER WATER / DO NOT DEPLOY YET"
         deploy   = "NO"
         nav_note = (
-            "Measured depth is substantially below the estimated bankfull mean depth. "
-            "ARC should continue searching for a deeper portion of the main thread or thalweg."
+            f"Measured depth ({depth_ft:.2f} ft) is below the {MIN_DEPLOY_DEPTH_FT:.2f} ft "
+            f"minimum required for safe turbine deployment. "
+            "ARC should continue searching for deeper water in the main thread or thalweg."
         )
-    elif ratio <= 1.4:
+    elif depth_ft <= HIGH_WATER_DEPTH_FT:
         action   = "DEPLOY CANDIDATE"
         deploy   = "YES"
         nav_note = (
-            "Depth is in a favorable range relative to the estimated bankfull mean depth. "
-            "This is a reasonable first-pass deployment candidate."
+            f"Depth ({depth_ft:.2f} ft) is within the operational deployment window "
+            f"({MIN_DEPLOY_DEPTH_FT:.0f}–{HIGH_WATER_DEPTH_FT:.0f} ft). "
+            "This is a favorable deployment candidate."
         )
-    else:
-        action   = "POSSIBLE DEPLOYMENT / VERIFY FLOW FIRST"
+    elif depth_ft < FLOOD_STAGE_DEPTH_FT:
+        action   = "POSSIBLE DEPLOYMENT / VERIFY CONDITIONS"
         deploy   = "MAYBE"
         nav_note = (
-            "Depth is above the estimated bankfull mean-depth value. "
-            "Verify that this is active high-velocity flow rather than pooled or slower water before deploying."
+            f"Depth ({depth_ft:.2f} ft) is approaching flood stage "
+            f"({FLOOD_STAGE_DEPTH_FT:.0f} ft). Verify that flow is navigable "
+            "and velocity is not dangerously high before deploying."
+        )
+    else:
+        action   = "DO NOT DEPLOY — FLOOD STAGE"
+        deploy   = "NO"
+        nav_note = (
+            f"Depth ({depth_ft:.2f} ft) is at or above flood stage "
+            f"({FLOOD_STAGE_DEPTH_FT:.0f} ft). Conditions are unsafe for deployment. "
+            "Retract and wait for water levels to recede."
         )
 
     return {
