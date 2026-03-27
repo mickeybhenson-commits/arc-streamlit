@@ -13,8 +13,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.306415   # upper boundary — Cullowhee Creek
-DEFAULT_LON                = -83.184694  # upper boundary — Cullowhee Creek
+DEFAULT_LAT                = 35.306598   # GPS-pinned on Cullowhee Creek channel
+DEFAULT_LON                = -83.184917  # GPS-pinned on Cullowhee Creek channel
 DEFAULT_SEARCH_DISTANCE_FT = 150         # primary unit is FEET
 M_TO_FT                    = 3.28084
 
@@ -210,10 +210,10 @@ if run_button:
 
             # ── Centerline shift: full Wbkf perpendicular to flow ─────────────
             # bearing − 90° = left-bank offset (west on Cullowhee Creek).
-            # If marker overshoots to far bank, change to * 0.75.
-            # If marker lands on near bank, change to + 90.
+            # If marker overshoots to far bank change to * 0.75.
+            # If marker stays on near bank change − 90 to + 90.
             _perp_bearing  = (hydro.downstream_bearing - 90) % 360
-            _center_offset = bankfull["Wbkf"]          # full channel width
+            _center_offset = bankfull["Wbkf"]
             center_lat, center_lon = _offset_point(
                 est_locations["max_velocity_lat"],
                 est_locations["max_velocity_lon"],
