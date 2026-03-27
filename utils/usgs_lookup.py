@@ -24,14 +24,12 @@ class HydroContext:
     notes:                  str
     debug_nldi_tot_excerpt:      str
     debug_streamstats_excerpt:   str
-    reach_elevations:       Optional[List[float]] = None   # ft, sampled ALONG flowline
-    reach_distances:        Optional[List[float]] = None   # ft, distance from arc position
-    reach_slope:            Optional[float]       = None   # ft/ft, average reach slope
-    downstream_bearing:     float                 = 155.0  # degrees
+    reach_elevations:       Optional[List[float]] = None
+    reach_distances:        Optional[List[float]] = None
+    reach_slope:            Optional[float]       = None
+    downstream_bearing:     float                 = 155.0
     flowline_coords:        Optional[List[Tuple[float, float]]] = None
-    # flowline_coords: (lat, lon) pairs ordered upstream→downstream
-    # Every candidate produced by estimate_demo_locations() is interpolated
-    # from these vertices — guaranteed to lie on the stream centerline.
+    # flowline_coords: (lat, lon) pairs — stream centerline, upstream→downstream
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -42,9 +40,7 @@ def safe_get_json(
 ) -> Optional[Dict[str, Any]]:
     try:
         response = requests.get(
-            url,
-            params=params,
-            timeout=REQUEST_TIMEOUT,
+            url, params=params, timeout=REQUEST_TIMEOUT,
             headers={"Accept": "application/json"},
         )
         response.raise_for_status()
@@ -64,7 +60,6 @@ def json_excerpt(data: Optional[Dict[str, Any]], max_chars: int = 2500) -> str:
 
 
 def _haversine_ft(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Haversine distance in feet between two geodetic points."""
     R   = 6_371_000.0
     φ1  = math.radians(lat1)
     φ2  = math.radians(lat2)
@@ -75,13 +70,17 @@ def _haversine_ft(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def _bearing_between(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Forward azimuth (degrees, 0–360) from point 1 → point 2."""
     dlon  = math.radians(lon2 - lon1)
     lat1r = math.radians(lat1)
     lat2r = math.radians(lat2)
     x = math.sin(dlon) * math.cos(lat2r)
     y = math.cos(lat1r) * math.sin(lat2r) - math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon)
     return (math.degrees(math.atan2(x, y)) + 360) % 360
+
+
+def _angle_diff(a: float, b: float) -> float:
+    """Absolute angular difference between two bearings (0–180°)."""
+    return abs(((a - b + 180) % 360) - 180)
 
 
 def _forward_offset_local(
@@ -106,19 +105,15 @@ def _forward_offset_local(
 
 def fetch_flowline_geometry(comid: str) -> Optional[List[Tuple[float, float]]]:
     """
-    Fetch NHDPlus flowline geometry for a COMID from the NLDI feature endpoint.
-
-    Returns a list of (lat, lon) tuples representing the stream centerline
-    vertices in upstream → downstream order, or None if unavailable.
-
-    GeoJSON coordinates are stored as [lon, lat]; this function converts them
-    to (lat, lon) for consistency with the rest of the codebase.
+    Fetch NHDPlus flowline centerline vertices for a COMID.
+    Returns (lat, lon) list in stored order (may be either upstream→downstream
+    or downstream→upstream — direction is resolved later using a bearing hint).
+    Returns None if the API call fails.
     """
     url  = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}"
     data = safe_get_json(url)
     if not data:
         return None
-
     try:
         coords = None
         geom   = data.get("geometry") or {}
@@ -130,48 +125,51 @@ def fetch_flowline_geometry(comid: str) -> Optional[List[Tuple[float, float]]]:
                 if g.get("type") == "LineString":
                     coords = g["coordinates"]
                     break
-
         if coords and len(coords) >= 2:
-            # GeoJSON: [lon, lat] → convert to (lat, lon)
-            return [(float(c[1]), float(c[0])) for c in coords]
-
+            return [(float(c[1]), float(c[0])) for c in coords]   # [lon,lat] → (lat,lon)
     except Exception:
         pass
-
     return None
 
 
 def bearing_from_flowline(
-    flowline_coords: List[Tuple[float, float]],
-    arc_lat: float,
-    arc_lon: float,
+    flowline_coords:  List[Tuple[float, float]],
+    arc_lat:          float,
+    arc_lon:          float,
+    bearing_hint:     float = 180.0,
 ) -> float:
     """
-    Derive the downstream bearing at the arc position from flowline geometry.
+    Derive the downstream bearing at arc position from flowline geometry.
 
-    Algorithm:
-      1. Find the nearest flowline vertex to (arc_lat, arc_lon).
-      2. Use the next two downstream vertices to compute the local bearing.
-      3. Falls back to south (180°) if geometry is degenerate.
+    Uses bearing_hint (from elevation probes or prior knowledge) to resolve
+    the direction ambiguity in NHDPlus LineString ordering.  The segment
+    adjacent to the nearest vertex whose bearing is CLOSEST to bearing_hint
+    is taken as the downstream direction.
+
+    Parameters
+    ----------
+    flowline_coords : (lat, lon) list — vertices in stored order
+    arc_lat, arc_lon : position of the deployment upper boundary
+    bearing_hint : rough downstream bearing from elevation probes (degrees)
+
+    Returns
+    -------
+    Downstream bearing in degrees (0–360).
     """
     if len(flowline_coords) < 2:
-        return 180.0
-
-    # Nearest vertex
-    min_d = float("inf")
-    idx   = 0
-    for i, (vlat, vlon) in enumerate(flowline_coords):
-        d = _haversine_ft(arc_lat, arc_lon, vlat, vlon)
-        if d < min_d:
-            min_d = d
-            idx   = i
+        return bearing_hint
 
     n = len(flowline_coords)
 
-    # Try both directions; pick the one pointing generally downstream
-    # (NHDPlus ordering is ambiguous — we resolve by taking the larger
-    # southward component, since the Cullowhee Creek reach runs NNW).
-    def _try_bearing(i: int, j: int) -> Optional[float]:
+    # 1. Find nearest vertex to arc position
+    min_d, idx = float("inf"), 0
+    for i, (vlat, vlon) in enumerate(flowline_coords):
+        d = _haversine_ft(arc_lat, arc_lon, vlat, vlon)
+        if d < min_d:
+            min_d, idx = d, i
+
+    # 2. Compute bearings for both adjacent segments
+    def _seg_bearing(i: int, j: int) -> Optional[float]:
         if 0 <= i < n and 0 <= j < n:
             return _bearing_between(
                 flowline_coords[i][0], flowline_coords[i][1],
@@ -179,20 +177,17 @@ def bearing_from_flowline(
             )
         return None
 
-    fwd = _try_bearing(idx, idx + 1)
-    bwd = _try_bearing(idx, idx - 1)
+    fwd_b = _seg_bearing(idx, idx + 1)
+    bwd_b = _seg_bearing(idx, idx - 1)
 
-    # Pick whichever departs from due-north (0°/360°) more toward a
-    # southward or stream-like direction; use southward half-plane test.
-    def _southward_score(b: Optional[float]) -> float:
-        if b is None:
-            return -1.0
-        # Score = cos(b - 180); peaks at south (180°), negative at north
-        return math.cos(math.radians(b - 180))
+    # 3. Pick whichever is closer to bearing_hint
+    fwd_diff = _angle_diff(fwd_b, bearing_hint) if fwd_b is not None else 360.0
+    bwd_diff = _angle_diff(bwd_b, bearing_hint) if bwd_b is not None else 360.0
 
-    candidates = [(fwd, _southward_score(fwd)), (bwd, _southward_score(bwd))]
-    best = max(candidates, key=lambda x: x[1])
-    return best[0] if best[0] is not None else 180.0
+    if fwd_diff <= bwd_diff:
+        return fwd_b if fwd_b is not None else bearing_hint
+    else:
+        return bwd_b if bwd_b is not None else bearing_hint
 
 
 # ── NLDI / StreamStats lookups ────────────────────────────────────────────────
@@ -352,7 +347,6 @@ def get_streamstats_drainage_area(
 # ── Elevation sampling ─────────────────────────────────────────────────────────
 
 def get_elevation_ft(lat: float, lon: float) -> Optional[float]:
-    """Query USGS 3DEP for ground elevation at (lat, lon). Returns feet."""
     url    = "https://epqs.nationalmap.gov/v1/json"
     params = {"x": lon, "y": lat, "wkid": 4326, "units": "Feet", "includeDate": False}
     try:
@@ -365,112 +359,130 @@ def get_elevation_ft(lat: float, lon: float) -> Optional[float]:
         return None
 
 
+def get_elevation_probe_bearing(
+    arc_lat:       float,
+    arc_lon:       float,
+    n_candidates:  int   = 8,
+    probe_dist_ft: float = 150.0,
+) -> float:
+    """
+    Probe 3DEP elevations in a full 360° arc to find the downhill direction.
+    Returns the bearing with the greatest elevation drop.
+    Used as a bearing_hint for flowline direction resolution.
+    """
+    dist_m   = probe_dist_ft * FT_TO_M
+    arc_elev = get_elevation_ft(arc_lat, arc_lon)
+    if arc_elev is None:
+        return 180.0
+
+    # Full 360° sweep — no southward constraint
+    bearings = [i * (360.0 / n_candidates) for i in range(n_candidates)]
+
+    def _probe(bearing: float) -> Tuple[float, Optional[float]]:
+        p_lat, p_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, bearing)
+        return bearing, get_elevation_ft(p_lat, p_lon)
+
+    drops: List[Tuple[float, float]] = []
+    with ThreadPoolExecutor(max_workers=n_candidates) as ex:
+        futures = {ex.submit(_probe, b): b for b in bearings}
+        for future in as_completed(futures):
+            bearing, elev = future.result()
+            if elev is not None:
+                drops.append((bearing, arc_elev - elev))
+
+    return max(drops, key=lambda x: x[1])[0] if drops else 180.0
+
+
 def sample_elevations_along_flowline(
-    arc_lat:          float,
-    arc_lon:          float,
-    flowline_coords:  List[Tuple[float, float]],
+    arc_lat:           float,
+    arc_lon:           float,
+    flowline_coords:   Optional[List[Tuple[float, float]]],
     downstream_bearing: float,
-    n_samples:        int   = 13,
-    total_ft:         float = 300.0,
+    n_samples:         int   = 13,
+    total_ft:          float = 300.0,
 ) -> Tuple[Optional[List[float]], Optional[List[float]]]:
     """
     Sample 3DEP elevations at n_samples points along the NHDPlus flowline
     starting from (arc_lat, arc_lon) and walking downstream.
 
-    When flowline_coords is available the sample points are interpolated
-    along the actual stream centerline.  If the flowline is too short or
-    unavailable, points are projected along downstream_bearing as a fallback.
-
-    Returns
-    -------
-    (distances_ft, elevations_ft) — both lists of length n_samples, or
-    (None, None) if any elevation query fails.
+    Uses flowline_coords when available (correct); falls back to straight-line
+    bearing projection only when flowline is unavailable.
     """
     step_ft = total_ft / (n_samples - 1)
-
-    # ── Build sample positions ────────────────────────────────────────────────
-    sample_points: List[Tuple[float, float, float]] = []   # (dist_ft, lat, lon)
+    sample_points: List[Tuple[float, float, float]] = []
 
     if flowline_coords and len(flowline_coords) >= 2:
+        n = len(flowline_coords)
+
         # Find nearest vertex to arc position
-        min_d = float("inf")
-        start_idx = 0
+        min_d, start_idx = float("inf"), 0
         for i, (vlat, vlon) in enumerate(flowline_coords):
             d = _haversine_ft(arc_lat, arc_lon, vlat, vlon)
             if d < min_d:
-                min_d = d
-                start_idx = i
+                min_d, start_idx = d, i
 
-        n = len(flowline_coords)
+        # Resolve downstream direction using bearing hint
+        fwd_b = (
+            _bearing_between(
+                flowline_coords[start_idx][0], flowline_coords[start_idx][1],
+                flowline_coords[start_idx + 1][0], flowline_coords[start_idx + 1][1],
+            ) if start_idx < n - 1 else None
+        )
+        bwd_b = (
+            _bearing_between(
+                flowline_coords[start_idx][0], flowline_coords[start_idx][1],
+                flowline_coords[start_idx - 1][0], flowline_coords[start_idx - 1][1],
+            ) if start_idx > 0 else None
+        )
+        fwd_diff = _angle_diff(fwd_b, downstream_bearing) if fwd_b is not None else 360.0
+        bwd_diff = _angle_diff(bwd_b, downstream_bearing) if bwd_b is not None else 360.0
 
-        # Determine downstream direction using bearing hint
-        def _try_b(i: int, j: int) -> Optional[float]:
-            if 0 <= i < n and 0 <= j < n:
-                return _bearing_between(
-                    flowline_coords[i][0], flowline_coords[i][1],
-                    flowline_coords[j][0], flowline_coords[j][1],
-                )
-            return None
+        segment: List[Tuple[float, float]] = (
+            flowline_coords[start_idx:]
+            if fwd_diff <= bwd_diff
+            else flowline_coords[start_idx::-1]
+        )
 
-        fwd_b = _try_b(start_idx, start_idx + 1)
-        bwd_b = _try_b(start_idx, start_idx - 1)
-
-        def _diff(b: Optional[float]) -> float:
-            if b is None:
-                return 360.0
-            return abs(((b - downstream_bearing + 180) % 360) - 180)
-
-        if (_diff(fwd_b) <= _diff(bwd_b)):
-            segment = flowline_coords[start_idx:]
-        else:
-            segment = flowline_coords[start_idx::-1]
-
-        # Build cumulative distance along segment
+        # Cumulative distances along segment
         cum: List[float] = [0.0]
         for i in range(1, len(segment)):
             cum.append(cum[-1] + _haversine_ft(
                 segment[i-1][0], segment[i-1][1],
                 segment[i][0],   segment[i][1],
             ))
+        flowline_len_ft = cum[-1]
 
-        seg_len_ft = cum[-1]
         last_bearing = (
             _bearing_between(
                 segment[-2][0], segment[-2][1],
                 segment[-1][0], segment[-1][1],
-            )
-            if len(segment) >= 2 else downstream_bearing
+            ) if len(segment) >= 2 else downstream_bearing
         )
+        last_lat, last_lon = segment[-1]
 
         for i in range(n_samples):
             dist_ft = round(i * step_ft, 2)
-            if dist_ft <= seg_len_ft:
-                # Interpolate along flowline
+            if dist_ft <= flowline_len_ft:
                 j = 0
                 while j < len(cum) - 2 and cum[j + 1] < dist_ft:
                     j += 1
-                if cum[j + 1] > cum[j]:
-                    t   = (dist_ft - cum[j]) / (cum[j + 1] - cum[j])
-                    lat = segment[j][0] + t * (segment[j + 1][0] - segment[j][0])
-                    lon = segment[j][1] + t * (segment[j + 1][1] - segment[j][1])
-                else:
-                    lat, lon = segment[j]
+                seg_len = cum[j + 1] - cum[j]
+                t   = (dist_ft - cum[j]) / seg_len if seg_len > 0 else 0.0
+                slat = segment[j][0] + t * (segment[j + 1][0] - segment[j][0])
+                slon = segment[j][1] + t * (segment[j + 1][1] - segment[j][1])
             else:
-                # Flowline exhausted — extend along final bearing
-                overshoot_m = (dist_ft - seg_len_ft) * FT_TO_M
-                lat, lon = _forward_offset_local(
-                    segment[-1][0], segment[-1][1], overshoot_m, last_bearing
-                )
-            sample_points.append((dist_ft, lat, lon))
+                overshoot_m = (dist_ft - flowline_len_ft) * FT_TO_M
+                slat, slon = _forward_offset_local(last_lat, last_lon, overshoot_m, last_bearing)
+            sample_points.append((dist_ft, slat, slon))
     else:
-        # Fallback: straight-line bearing projection
         for i in range(n_samples):
             dist_ft = round(i * step_ft, 2)
-            dist_m  = dist_ft * FT_TO_M
-            s_lat, s_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, downstream_bearing)
-            sample_points.append((dist_ft, s_lat, s_lon))
+            slat, slon = _forward_offset_local(
+                arc_lat, arc_lon, dist_ft * FT_TO_M, downstream_bearing
+            )
+            sample_points.append((dist_ft, slat, slon))
 
-    # ── Parallel 3DEP queries ─────────────────────────────────────────────────
+    # Parallel 3DEP queries
     results: Dict[int, Optional[float]] = {}
 
     def _fetch(idx: int, s_lat: float, s_lon: float) -> Tuple[int, Optional[float]]:
@@ -494,46 +506,6 @@ def sample_elevations_along_flowline(
     return distances, elevations
 
 
-def get_downstream_bearing(
-    arc_lat:       float,
-    arc_lon:       float,
-    comid:         Optional[str] = None,
-    n_candidates:  int   = 8,
-    probe_dist_ft: float = 150.0,
-) -> float:
-    """
-    Kept for backward compatibility.
-    Prefers NHD flowline geometry; falls back to elevation probes.
-    Use build_hydro_context() which also exposes flowline_coords.
-    """
-    if comid:
-        coords = fetch_flowline_geometry(comid)
-        if coords:
-            return bearing_from_flowline(coords, arc_lat, arc_lon)
-
-    # Fallback: elevation probes constrained to southward arc
-    dist_m   = probe_dist_ft * FT_TO_M
-    arc_elev = get_elevation_ft(arc_lat, arc_lon)
-    if arc_elev is None:
-        return 180.0
-
-    bearings = [90.0 + i * (180.0 / (n_candidates - 1)) for i in range(n_candidates)]
-
-    def _probe(bearing: float) -> Tuple[float, Optional[float]]:
-        p_lat, p_lon = _forward_offset_local(arc_lat, arc_lon, dist_m, bearing)
-        return bearing, get_elevation_ft(p_lat, p_lon)
-
-    drops: List[Tuple[float, float]] = []
-    with ThreadPoolExecutor(max_workers=n_candidates) as ex:
-        futures = {ex.submit(_probe, b): b for b in bearings}
-        for future in as_completed(futures):
-            bearing, elev = future.result()
-            if elev is not None:
-                drops.append((bearing, arc_elev - elev))
-
-    return max(drops, key=lambda x: x[1])[0] if drops else 180.0
-
-
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def build_hydro_context(lat: float, lon: float) -> HydroContext:
@@ -552,8 +524,8 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
         stream_name = stream_name_raw or "Unnamed stream"
 
     # 3. Drainage area
-    drainage_area_sqmi = None
-    source             = "No automatic drainage area available"
+    drainage_area_sqmi        = None
+    source                    = "No automatic drainage area available"
     debug_nldi_tot_excerpt    = "Not requested"
     debug_streamstats_excerpt = "Not requested"
 
@@ -570,35 +542,39 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
             drainage_area_sqmi = ss_da
             source             = "USGS StreamStats"
 
-    # 4. NHDPlus flowline geometry (single API call — reused for bearing + elevation sampling)
+    # 4. Elevation-probe bearing — full 360° sweep, no directional bias
+    #    This gives a rough downhill bearing used as the flowline direction hint.
+    probe_bearing = get_elevation_probe_bearing(lat, lon)
+    notes.append(f"Elevation-probe bearing (360° sweep): {probe_bearing:.1f}°")
+
+    # 5. NHDPlus flowline geometry — direction resolved using probe_bearing hint
     flowline_coords: Optional[List[Tuple[float, float]]] = None
-    downstream_bearing = 180.0   # default south
+    downstream_bearing = probe_bearing   # default to probe if flowline unavailable
 
     if comid:
         flowline_coords = fetch_flowline_geometry(comid)
         if flowline_coords:
-            downstream_bearing = bearing_from_flowline(flowline_coords, lat, lon)
+            downstream_bearing = bearing_from_flowline(
+                flowline_coords, lat, lon,
+                bearing_hint=probe_bearing,   # ← resolves NNW vs SSE correctly
+            )
             notes.append(
-                f"Flowline geometry fetched: {len(flowline_coords)} vertices. "
-                f"Downstream bearing from flowline: {downstream_bearing:.1f}°"
+                f"Flowline geometry: {len(flowline_coords)} vertices. "
+                f"Downstream bearing (flowline + hint): {downstream_bearing:.1f}°"
             )
         else:
-            notes.append("Flowline geometry unavailable — falling back to elevation probe bearing")
-            downstream_bearing = get_downstream_bearing(lat, lon, comid=None)
-            notes.append(f"Elevation-probe bearing: {downstream_bearing:.1f}°")
+            notes.append("Flowline geometry unavailable — using elevation-probe bearing")
     else:
-        notes.append("No COMID — falling back to elevation probe bearing")
-        downstream_bearing = get_downstream_bearing(lat, lon, comid=None)
-        notes.append(f"Elevation-probe bearing: {downstream_bearing:.1f}°")
+        notes.append("No COMID — using elevation-probe bearing")
 
-    # 5. Sample 3DEP elevations ALONG the flowline (not along straight bearing)
+    # 6. Sample 3DEP elevations along correctly-oriented flowline
     reach_distances, reach_elevations = sample_elevations_along_flowline(
-        arc_lat           = lat,
-        arc_lon           = lon,
-        flowline_coords   = flowline_coords,
-        downstream_bearing= downstream_bearing,
-        n_samples         = 13,
-        total_ft          = 300.0,
+        arc_lat            = lat,
+        arc_lon            = lon,
+        flowline_coords    = flowline_coords,
+        downstream_bearing = downstream_bearing,
+        n_samples          = 13,
+        total_ft           = 300.0,
     )
 
     reach_slope = None
@@ -610,17 +586,17 @@ def build_hydro_context(lat: float, lon: float) -> HydroContext:
         notes.append("3DEP elevation sampling failed — using estimated bed profile")
 
     return HydroContext(
-        drainage_area_sqmi       = drainage_area_sqmi,
-        comid                    = comid,
-        reachcode                = reachcode,
-        stream_name              = stream_name,
-        source                   = source,
-        notes                    = " | ".join(notes),
-        debug_nldi_tot_excerpt   = debug_nldi_tot_excerpt,
-        debug_streamstats_excerpt= debug_streamstats_excerpt,
-        reach_elevations         = reach_elevations,
-        reach_distances          = reach_distances,
-        reach_slope              = reach_slope,
-        downstream_bearing       = downstream_bearing,
-        flowline_coords          = flowline_coords,
+        drainage_area_sqmi        = drainage_area_sqmi,
+        comid                     = comid,
+        reachcode                 = reachcode,
+        stream_name               = stream_name,
+        source                    = source,
+        notes                     = " | ".join(notes),
+        debug_nldi_tot_excerpt    = debug_nldi_tot_excerpt,
+        debug_streamstats_excerpt = debug_streamstats_excerpt,
+        reach_elevations          = reach_elevations,
+        reach_distances           = reach_distances,
+        reach_slope               = reach_slope,
+        downstream_bearing        = downstream_bearing,
+        flowline_coords           = flowline_coords,
     )
