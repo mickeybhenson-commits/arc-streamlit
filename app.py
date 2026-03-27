@@ -339,13 +339,9 @@ if st.session_state.results:
             font-size:20px;box-shadow:2px 2px 5px rgba(0,0,0,0.4);pointer-events:none;">🧭</div>
         """))
 
-        # Draw NHDPlus flowline
-        if hydro.flowline_coords and len(hydro.flowline_coords) >= 2:
-            folium.PolyLine(
-                locations=[(la, lo) for la, lo in hydro.flowline_coords],
-                color="#00BFFF", weight=3, opacity=0.8,
-                tooltip="NHDPlus flowline centerline",
-            ).add_to(m)
+        # NHDPlus flowline hidden from map — medium-resolution geometry
+        # (1:100k scale) does not align with high-resolution satellite imagery.
+        # Flowline is still used internally for all hydraulic calculations.
 
         # Best deployment point
         folium.Marker(
