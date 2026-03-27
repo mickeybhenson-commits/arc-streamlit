@@ -1,3 +1,5 @@
+import math as _math
+
 import streamlit as st
 
 from utils.usgs_lookup import build_hydro_context
@@ -11,12 +13,36 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT = 35.3064145
-DEFAULT_LON = -83.1849173
-DEFAULT_SEARCH_DISTANCE_M = 50  # vessel sweeps up to 50 m downstream of upper boundary
-M_TO_FT = 3.28084
+DEFAULT_LAT              = 35.3064145
+DEFAULT_LON              = -83.1849173
+DEFAULT_SEARCH_DISTANCE_FT = 150        # ≈ 46 m  (primary unit is now FEET)
+M_TO_FT                  = 3.28084
 
 
+# ── Centerline-offset helper ──────────────────────────────────────────────────
+def _offset_point(lat: float, lon: float, bearing_deg: float, distance_ft: float):
+    """
+    Return a new (lat, lon) displaced from the input point by distance_ft
+    along the given bearing (degrees, clockwise from north).
+    Uses spherical-earth approximation (R = 6 371 000 m).
+    """
+    dist_m = distance_ft / M_TO_FT
+    R      = 6_371_000.0
+    b      = _math.radians(bearing_deg)
+    φ1     = _math.radians(lat)
+    λ1     = _math.radians(lon)
+    φ2     = _math.asin(
+        _math.sin(φ1) * _math.cos(dist_m / R)
+        + _math.cos(φ1) * _math.sin(dist_m / R) * _math.cos(b)
+    )
+    λ2     = λ1 + _math.atan2(
+        _math.sin(b) * _math.sin(dist_m / R) * _math.cos(φ1),
+        _math.cos(dist_m / R) - _math.sin(φ1) * _math.sin(φ2),
+    )
+    return _math.degrees(φ2), _math.degrees(λ2)
+
+
+# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="ARC Hydrokinetic Deployment Advisor",
     page_icon="🌊",
@@ -29,26 +55,31 @@ st.caption(
     "Upper boundary set near Cullowhee Creek — vessel searches downstream within the configured range to detect max velocity."
 )
 
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Inputs")
 
-    st.write("Upper boundary of deployment zone on Cullowhee Creek. Vessel sweeps downstream to detect max velocity.")
-    lat = st.number_input("Upper Boundary Latitude", value=DEFAULT_LAT, format="%.6f")
+    st.write(
+        "Upper boundary of deployment zone on Cullowhee Creek. "
+        "Vessel sweeps downstream to detect max velocity."
+    )
+    lat = st.number_input("Upper Boundary Latitude",  value=DEFAULT_LAT, format="%.6f")
     lon = st.number_input("Upper Boundary Longitude", value=DEFAULT_LON, format="%.6f")
 
+    # ── Search range (PRIMARY UNIT: FEET) ─────────────────────────────────────
     st.subheader("Search Range")
-    search_distance_m = st.number_input(
-        "Downstream search distance (m)",
-        min_value=10,
-        max_value=200,
-        value=DEFAULT_SEARCH_DISTANCE_M,
-        step=10,
+    search_distance_ft = st.number_input(
+        "Downstream search distance (ft)",
+        min_value=25,
+        max_value=650,
+        value=DEFAULT_SEARCH_DISTANCE_FT,
+        step=25,
     )
-    search_distance_ft = round(search_distance_m * M_TO_FT, 1)
-    st.caption(f"≈ {search_distance_ft:.0f} ft — vessel evaluates candidates every 5 ft within this range")
+    search_distance_m = round(search_distance_ft / M_TO_FT, 1)
+    st.caption(f"≈ {search_distance_m:.0f} m — vessel evaluates candidates every 5 ft within this range")
 
-    # Depth range: 0.50 ft to 12.00 ft (flood stage ≈ 12 ft), 0.25 ft increments
-    demo_depths = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
+    # Depth range: 0.50 ft → 12.00 ft, 0.25 ft increments
+    demo_depths   = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
     default_depth = 2.00
     default_index = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
 
@@ -60,7 +91,7 @@ with st.sidebar:
     )
 
     st.subheader("Drainage Area Options")
-    use_manual_da = st.checkbox("Override with manual drainage area", value=False)
+    use_manual_da       = st.checkbox("Override with manual drainage area", value=False)
     drainage_area_manual = st.number_input(
         "Manual drainage area (mi²)",
         min_value=0.0001,
@@ -93,23 +124,24 @@ with st.sidebar:
     )
 
     show_debug = st.checkbox("Show raw lookup debug output", value=False)
-
     run_button = st.button("Run Demo Recommendation", use_container_width=True)
+
 
 # ── Session state — persists results across map interactions / re-runs ────────
 if "results" not in st.session_state:
     st.session_state.results = None
 
+# ── Run logic ─────────────────────────────────────────────────────────────────
 if run_button:
     try:
         with st.spinner("Computing demo recommendation..."):
             hydro = build_hydro_context(lat, lon)
 
             if use_manual_da:
-                drainage_area_sqmi = drainage_area_manual
+                drainage_area_sqmi   = drainage_area_manual
                 drainage_area_source = "Manual override"
             else:
-                drainage_area_sqmi = hydro.drainage_area_sqmi
+                drainage_area_sqmi   = hydro.drainage_area_sqmi
                 drainage_area_source = hydro.source
 
             if drainage_area_sqmi is None:
@@ -119,29 +151,20 @@ if run_button:
                 )
                 st.write("Hydro lookup notes:")
                 st.code(hydro.notes)
-
                 if show_debug:
                     st.subheader("Raw NLDI tot payload")
                     st.code(hydro.debug_nldi_tot_excerpt, language="json")
-
                     st.subheader("Raw StreamStats payload")
                     st.code(hydro.debug_streamstats_excerpt, language="json")
-
                 st.stop()
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
 
             # ── Jensen wake model — auto-computed from regional curve hydraulics ──
-            # Froude number at bankfull: Fr = V_bkf / sqrt(g * D_bkf)
-            # k = 0.04 + 0.02 * min(Fr, 1.0)  → bounded 0.04–0.06
-            # Thrust coefficient Ct derived from Cp via axial induction factor:
-            #   Cp = 4a(1-a)²  →  Ct = 4a(1-a)
-            import math as _math
-
-            _g_ft_s2   = 32.2
-            _v_bkf     = bankfull["Qbkf"] / bankfull["Abkf"] if bankfull["Abkf"] > 0 else 1.0
-            _fr        = _v_bkf / _math.sqrt(_g_ft_s2 * bankfull["Dbkf"]) if bankfull["Dbkf"] > 0 else 0.3
-            _k_wake    = round(0.04 + 0.02 * min(_fr, 1.0), 4)
+            _g_ft_s2 = 32.2
+            _v_bkf   = bankfull["Qbkf"] / bankfull["Abkf"] if bankfull["Abkf"] > 0 else 1.0
+            _fr      = _v_bkf / _math.sqrt(_g_ft_s2 * bankfull["Dbkf"]) if bankfull["Dbkf"] > 0 else 0.3
+            _k_wake  = round(0.04 + 0.02 * min(_fr, 1.0), 4)
 
             def _solve_induction(cp_val: float) -> float:
                 a = 0.25
@@ -154,18 +177,18 @@ if run_button:
                     a  = max(0.01, min(0.49, a))
                 return a
 
-            _a_ind  = _solve_induction(cp)
-            _ct     = 4 * _a_ind * (1 - _a_ind)
-            _r_ft   = turbine_diameter_ft / 2.0
-            _x_ft   = 4.0   # station spacing fixed by vessel geometry
+            _a_ind = _solve_induction(cp)
+            _ct    = 4 * _a_ind * (1 - _a_ind)
+            _r_ft  = turbine_diameter_ft / 2.0
+            _x_ft  = 4.0    # station spacing fixed by vessel geometry
 
             wake_velocity_factor = 1.0 - (1.0 - _math.sqrt(max(0.0, 1.0 - _ct))) * \
                                    (_r_ft / (_r_ft + _k_wake * _x_ft)) ** 2
             wake_velocity_factor = round(max(0.50, min(1.00, wake_velocity_factor)), 4)
-            recommendation = recommend_action(selected_depth, bankfull)
 
-            est_velocity = estimate_demo_max_velocity(selected_depth, bankfull)
-            est_locations = estimate_demo_locations(
+            recommendation = recommend_action(selected_depth, bankfull)
+            est_velocity   = estimate_demo_max_velocity(selected_depth, bankfull)
+            est_locations  = estimate_demo_locations(
                 arc_lat=lat,
                 arc_lon=lon,
                 depth_ft=selected_depth,
@@ -185,7 +208,19 @@ if run_button:
                 wake_velocity_factor=wake_velocity_factor,
             )
 
-            # ── Persist all results in session state ──────────────────────────
+            # ── Centerline shift: ½ × Wbkf perpendicular to flow ──────────────
+            # bearing + 90° = right-bank offset (flip to − 90° if upper boundary
+            # is on the left bank and the marker lands on dry ground).
+            _perp_bearing  = (hydro.downstream_bearing + 90) % 360
+            _half_width_ft = bankfull["Wbkf"] / 2.0
+            center_lat, center_lon = _offset_point(
+                est_locations["max_velocity_lat"],
+                est_locations["max_velocity_lon"],
+                _perp_bearing,
+                _half_width_ft,
+            )
+
+            # ── Persist all results ───────────────────────────────────────────
             st.session_state.results = {
                 "hydro":                hydro,
                 "drainage_area_sqmi":   drainage_area_sqmi,
@@ -207,40 +242,48 @@ if run_button:
                 "show_debug":           show_debug,
                 "search_distance_m":    search_distance_m,
                 "search_distance_ft":   search_distance_ft,
+                "center_lat":           center_lat,
+                "center_lon":           center_lon,
+                "_half_width_ft":       _half_width_ft,
             }
 
     except Exception as e:
         st.error("The app hit an error.")
         st.code(str(e))
 
-# ── Display results from session state (survives map re-runs) ─────────────────
+
+# ── Display results from session state ───────────────────────────────────────
 if st.session_state.results:
-    r                   = st.session_state.results
-    hydro               = r["hydro"]
-    drainage_area_sqmi  = r["drainage_area_sqmi"]
-    drainage_area_source= r["drainage_area_source"]
-    bankfull            = r["bankfull"]
-    recommendation      = r["recommendation"]
-    est_velocity        = r["est_velocity"]
-    est_locations       = r["est_locations"]
-    power               = r["power"]
-    selected_depth      = r["selected_depth"]
-    lat                 = r["lat"]
-    lon                 = r["lon"]
-    turbine_diameter_ft = r["turbine_diameter_ft"]
-    cp                  = r["cp"]
-    wake_velocity_factor= r["wake_velocity_factor"]
-    _fr                 = r["_fr"]
-    _k_wake             = r["_k_wake"]
-    _ct                 = r["_ct"]
-    show_debug          = r["show_debug"]
-    search_distance_m   = r["search_distance_m"]
-    search_distance_ft  = r["search_distance_ft"]
+    r                    = st.session_state.results
+    hydro                = r["hydro"]
+    drainage_area_sqmi   = r["drainage_area_sqmi"]
+    drainage_area_source = r["drainage_area_source"]
+    bankfull             = r["bankfull"]
+    recommendation       = r["recommendation"]
+    est_velocity         = r["est_velocity"]
+    est_locations        = r["est_locations"]
+    power                = r["power"]
+    selected_depth       = r["selected_depth"]
+    lat                  = r["lat"]
+    lon                  = r["lon"]
+    turbine_diameter_ft  = r["turbine_diameter_ft"]
+    cp                   = r["cp"]
+    wake_velocity_factor = r["wake_velocity_factor"]
+    _fr                  = r["_fr"]
+    _k_wake              = r["_k_wake"]
+    _ct                  = r["_ct"]
+    show_debug           = r["show_debug"]
+    search_distance_m    = r["search_distance_m"]
+    search_distance_ft   = r["search_distance_ft"]
+    center_lat           = r["center_lat"]
+    center_lon           = r["center_lon"]
+    _half_width_ft       = r["_half_width_ft"]
 
     z_from_surface = round(selected_depth * 0.20, 2)
 
     st.success("Demo recommendation computed successfully.")
 
+    # ── Recommendation + Hydro Context ───────────────────────────────────────
     top1, top2 = st.columns([1, 1])
 
     with top1:
@@ -261,7 +304,7 @@ if st.session_state.results:
     with top2:
         st.subheader("Hydro Context")
         st.write(f"**Upper boundary (lat, lon):** {lat:.6f}, {lon:.6f}")
-        st.write(f"**Downstream search range:** {search_distance_m} m ({search_distance_ft:.0f} ft)")
+        st.write(f"**Downstream search range:** {search_distance_ft:.0f} ft ({search_distance_m:.0f} m)")
         st.write(f"**COMID:** {hydro.comid or 'N/A'}")
         st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
         st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
@@ -300,12 +343,12 @@ if st.session_state.results:
         )
 
     # ── Best Deployment Location ──────────────────────────────────────────────
-    st.subheader("Estimated Best Deployment Location (x, y, z)")
+    st.subheader("Estimated Best Deployment Location (x, y, z) — Stream Centerline")
     loc1, loc2 = st.columns([1, 1])
     with loc1:
         st.code(
-            f"x = {est_locations['max_velocity_lon']:.6f}\n"
-            f"y = {est_locations['max_velocity_lat']:.6f}\n"
+            f"x = {center_lon:.6f}\n"
+            f"y = {center_lat:.6f}\n"
             f"z = {z_from_surface:.2f} ft below surface",
             language="text",
         )
@@ -313,10 +356,11 @@ if st.session_state.results:
         st.write(f"**Distance downstream of upper boundary:** {est_locations['best_candidate_distance_ft']:.0f} ft")
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
+        st.write(f"**Centerline offset (½ × Wbkf):** {_half_width_ft:.2f} ft")
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
-    # ── Deployment map ────────────────────────────────────────────────────────
+    # ── Deployment map — Esri World Imagery satellite basemap ─────────────────
     st.subheader("Deployment Map")
     try:
         import folium
@@ -325,28 +369,44 @@ if st.session_state.results:
         m = folium.Map(
             location=[lat, lon],
             zoom_start=17,
-            tiles="OpenStreetMap",
+            tiles=(
+                "https://server.arcgisonline.com/ArcGIS/rest/services"
+                "/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            ),
+            attr="Esri World Imagery",
         )
 
+        # Hybrid labels overlay (road/stream names on top of satellite)
+        folium.TileLayer(
+            tiles=(
+                "https://server.arcgisonline.com/ArcGIS/rest/services"
+                "/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+            ),
+            attr="Esri Labels",
+            name="Labels",
+            overlay=True,
+            opacity=0.7,
+        ).add_to(m)
+
+        # Best deployment point — shifted to stream centerline
         popup_text = (
-            f"Best Deployment Point<br>"
+            f"Best Deployment Point (centerline)<br>"
             f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
             f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
+            f"Centerline offset: {_half_width_ft:.2f} ft (½ × Wbkf)<br>"
             f"z = {z_from_surface:.2f} ft below surface"
         )
         folium.Marker(
-            location=[
-                est_locations["max_velocity_lat"],
-                est_locations["max_velocity_lon"],
-            ],
-            popup=folium.Popup(popup_text, max_width=250),
-            tooltip="Best Deployment Point (max velocity)",
+            location=[center_lat, center_lon],
+            popup=folium.Popup(popup_text, max_width=260),
+            tooltip="Best Deployment Point — stream centerline",
             icon=folium.Icon(color="orange", icon="water", prefix="fa"),
         ).add_to(m)
 
+        # Upper boundary marker
         folium.Marker(
             location=[lat, lon],
-            popup=f"Upper Boundary — vessel searches {search_distance_m} m downstream",
+            popup=f"Upper Boundary — vessel searches {search_distance_ft:.0f} ft downstream",
             tooltip="Upper Boundary",
             icon=folium.Icon(color="green", icon="flag", prefix="fa"),
         ).add_to(m)
@@ -356,10 +416,10 @@ if st.session_state.results:
     except Exception as map_err:
         st.warning(f"Map could not render: {map_err}")
 
+    # ── Debug ─────────────────────────────────────────────────────────────────
     if show_debug:
         st.subheader("Raw NLDI tot payload")
         st.code(hydro.debug_nldi_tot_excerpt, language="json")
-
         st.subheader("Raw StreamStats payload")
         st.code(hydro.debug_streamstats_excerpt, language="json")
 
