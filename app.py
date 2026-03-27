@@ -13,35 +13,14 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.306497   # GPS-pinned — upper boundary on Cullowhee Creek
-DEFAULT_LON                = -83.184811  # GPS-pinned — upper boundary on Cullowhee Creek
-DEFAULT_DEPLOY_LAT         = 35.306690   # GPS-pinned — best deployment point (orange marker)
-DEFAULT_DEPLOY_LON         = -83.184994  # GPS-pinned — best deployment point (orange marker)
+# ── Defaults ──────────────────────────────────────────────────────────────────
+# Set these to any point INSIDE the creek channel.
+# Hover over the map after running to read live lat/lon from the bottom-left
+# readout, then update these defaults to lock them in.
+DEFAULT_LAT                = 35.306497   # upper boundary — Cullowhee Creek
+DEFAULT_LON                = -83.184811  # upper boundary — Cullowhee Creek
 DEFAULT_SEARCH_DISTANCE_FT = 300         # primary unit is FEET
 M_TO_FT                    = 3.28084
-
-
-# ── Centerline-offset helper ──────────────────────────────────────────────────
-def _offset_point(lat: float, lon: float, bearing_deg: float, distance_ft: float):
-    """
-    Return a new (lat, lon) displaced from the input point by distance_ft
-    along the given bearing (degrees, clockwise from north).
-    Uses spherical-earth approximation (R = 6 371 000 m).
-    """
-    dist_m = distance_ft / M_TO_FT
-    R      = 6_371_000.0
-    b      = _math.radians(bearing_deg)
-    φ1     = _math.radians(lat)
-    λ1     = _math.radians(lon)
-    φ2     = _math.asin(
-        _math.sin(φ1) * _math.cos(dist_m / R)
-        + _math.cos(φ1) * _math.sin(dist_m / R) * _math.cos(b)
-    )
-    λ2     = λ1 + _math.atan2(
-        _math.sin(b) * _math.sin(dist_m / R) * _math.cos(φ1),
-        _math.cos(dist_m / R) - _math.sin(φ1) * _math.sin(φ2),
-    )
-    return _math.degrees(φ2), _math.degrees(λ2)
 
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -54,7 +33,8 @@ st.set_page_config(
 st.title("ARC Hydrokinetic Deployment Advisor")
 st.caption(
     "Stable demo mode with preset water depths from 0.50 ft to 12.00 ft (flood stage ≈ 12 ft). "
-    "Upper boundary set near Cullowhee Creek — vessel searches downstream within the configured range to detect max velocity."
+    "Upper boundary set near Cullowhee Creek — vessel searches downstream along the NHDPlus "
+    "flowline centerline to detect max velocity."
 )
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -63,7 +43,7 @@ with st.sidebar:
 
     st.write(
         "Upper boundary of deployment zone on Cullowhee Creek. "
-        "Vessel sweeps downstream to detect max velocity."
+        "Vessel sweeps downstream along stream centerline to detect max velocity."
     )
     lat = st.number_input("Upper Boundary Latitude",  value=DEFAULT_LAT, format="%.6f")
     lon = st.number_input("Upper Boundary Longitude", value=DEFAULT_LON, format="%.6f")
@@ -77,11 +57,11 @@ with st.sidebar:
         step=25,
     )
     search_distance_m = round(search_distance_ft / M_TO_FT, 1)
-    st.caption(f"≈ {search_distance_m:.0f} m — vessel evaluates candidates every 5 ft within this range")
+    st.caption(f"≈ {search_distance_m:.0f} m — vessel evaluates candidates every 5 ft along flowline")
 
-    demo_depths    = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
-    default_depth  = 2.00
-    default_index  = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
+    demo_depths   = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
+    default_depth = 2.00
+    default_index = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
 
     selected_depth = st.selectbox(
         "Select demo water depth (ft)",
@@ -160,6 +140,7 @@ if run_button:
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
 
+            # ── Jensen wake model ─────────────────────────────────────────────
             _g_ft_s2 = 32.2
             _v_bkf   = bankfull["Qbkf"] / bankfull["Abkf"] if bankfull["Abkf"] > 0 else 1.0
             _fr      = _v_bkf / _math.sqrt(_g_ft_s2 * bankfull["Dbkf"]) if bankfull["Dbkf"] > 0 else 0.3
@@ -187,43 +168,37 @@ if run_button:
 
             recommendation = recommend_action(selected_depth, bankfull)
             est_velocity   = estimate_demo_max_velocity(selected_depth, bankfull)
-            est_locations  = estimate_demo_locations(
-                arc_lat=lat,
-                arc_lon=lon,
-                depth_ft=selected_depth,
-                bankfull=bankfull,
-                turbine_diameter_ft=turbine_diameter_ft,
-                reach_elevations=hydro.reach_elevations,
-                reach_distances=hydro.reach_distances,
-                downstream_bearing=hydro.downstream_bearing,
-                search_distance_ft=search_distance_ft,
-            )
-            power = estimate_power_output(
-                velocity_ft_s=float(est_velocity["estimated_max_velocity_ft_s"]),
-                turbine_diameter_ft=turbine_diameter_ft,
-                cp=cp,
-                num_rows=3,
-                turbines_per_row=2,
-                wake_velocity_factor=wake_velocity_factor,
+
+            # ── Deployment location — computed from NHDPlus flowline ───────────
+            # All candidate positions are interpolated from the stream centerline
+            # geometry fetched by build_hydro_context().  No hardcoded GPS pins.
+            est_locations = estimate_demo_locations(
+                arc_lat            = lat,
+                arc_lon            = lon,
+                depth_ft           = selected_depth,
+                bankfull           = bankfull,
+                turbine_diameter_ft= turbine_diameter_ft,
+                reach_elevations   = hydro.reach_elevations,
+                reach_distances    = hydro.reach_distances,
+                downstream_bearing = hydro.downstream_bearing,
+                search_distance_ft = search_distance_ft,
+                flowline_coords    = hydro.flowline_coords,   # ← stream centerline
             )
 
-            # ── Deployment point: use GPS-pinned defaults; fall back to
-            #    computed centerline if user has changed the upper boundary ────
-            if abs(lat - DEFAULT_LAT) < 1e-5 and abs(lon - DEFAULT_LON) < 1e-5:
-                # Default creek location — use GPS-verified pin
-                center_lat     = DEFAULT_DEPLOY_LAT
-                center_lon     = DEFAULT_DEPLOY_LON
-                _center_offset = 0.0   # offset baked into pinned coords
-            else:
-                # User-supplied boundary — compute centerline dynamically
-                _perp_bearing  = (hydro.downstream_bearing - 90) % 360
-                _center_offset = bankfull["Wbkf"]
-                center_lat, center_lon = _offset_point(
-                    est_locations["max_velocity_lat"],
-                    est_locations["max_velocity_lon"],
-                    _perp_bearing,
-                    _center_offset,
-                )
+            power = estimate_power_output(
+                velocity_ft_s       = float(est_velocity["estimated_max_velocity_ft_s"]),
+                turbine_diameter_ft = turbine_diameter_ft,
+                cp                  = cp,
+                num_rows            = 3,
+                turbines_per_row    = 2,
+                wake_velocity_factor= wake_velocity_factor,
+            )
+
+            # Deployment marker = best in-channel candidate (no perpendicular offset needed —
+            # the flowline walk guarantees we are already on the stream centerline)
+            deploy_lat = est_locations["max_velocity_lat"]
+            deploy_lon = est_locations["max_velocity_lon"]
+            z_from_surface = round(selected_depth * 0.20, 2)
 
             st.session_state.results = {
                 "hydro":                hydro,
@@ -237,6 +212,9 @@ if run_button:
                 "selected_depth":       selected_depth,
                 "lat":                  lat,
                 "lon":                  lon,
+                "deploy_lat":           deploy_lat,
+                "deploy_lon":           deploy_lon,
+                "z_from_surface":       z_from_surface,
                 "turbine_diameter_ft":  turbine_diameter_ft,
                 "cp":                   cp,
                 "wake_velocity_factor": wake_velocity_factor,
@@ -246,9 +224,6 @@ if run_button:
                 "show_debug":           show_debug,
                 "search_distance_m":    search_distance_m,
                 "search_distance_ft":   search_distance_ft,
-                "center_lat":           center_lat,
-                "center_lon":           center_lon,
-                "_center_offset":       _center_offset,
             }
 
     except Exception as e:
@@ -270,6 +245,9 @@ if st.session_state.results:
     selected_depth       = r["selected_depth"]
     lat                  = r["lat"]
     lon                  = r["lon"]
+    deploy_lat           = r["deploy_lat"]
+    deploy_lon           = r["deploy_lon"]
+    z_from_surface       = r["z_from_surface"]
     turbine_diameter_ft  = r["turbine_diameter_ft"]
     cp                   = r["cp"]
     wake_velocity_factor = r["wake_velocity_factor"]
@@ -279,14 +257,22 @@ if st.session_state.results:
     show_debug           = r["show_debug"]
     search_distance_m    = r["search_distance_m"]
     search_distance_ft   = r["search_distance_ft"]
-    center_lat           = r["center_lat"]
-    center_lon           = r["center_lon"]
-    _center_offset       = r["_center_offset"]
 
-    z_from_surface = round(selected_depth * 0.20, 2)
+    used_flowline = est_locations.get("used_flowline", False)
 
     st.success("Demo recommendation computed successfully.")
+    if used_flowline:
+        st.info(
+            "✅ Deployment location computed from **NHDPlus flowline geometry** — "
+            "all candidate positions lie on the stream centerline."
+        )
+    else:
+        st.warning(
+            "⚠️ Flowline geometry unavailable — candidates projected along bearing. "
+            "Verify deployment marker is in channel."
+        )
 
+    # ── Recommendation + Hydro Context ───────────────────────────────────────
     top1, top2 = st.columns([1, 1])
 
     with top1:
@@ -309,16 +295,21 @@ if st.session_state.results:
         st.write(f"**Downstream search range:** {search_distance_ft:.0f} ft ({search_distance_m:.0f} m)")
         st.write(f"**COMID:** {hydro.comid or 'N/A'}")
         st.write(f"**ReachCode:** {hydro.reachcode or 'N/A'}")
+        st.write(f"**Stream name:** {hydro.stream_name or 'N/A'}")
+        st.write(f"**Downstream bearing:** {hydro.downstream_bearing:.1f}°")
+        st.write(f"**Flowline vertices:** {len(hydro.flowline_coords) if hydro.flowline_coords else 'N/A'}")
         st.write(f"**Drainage area used:** {drainage_area_sqmi:.3f} mi²")
         st.write(f"**Drainage area source:** {drainage_area_source}")
         st.write(f"**Hydro lookup notes:** {hydro.notes}")
 
+    # ── Power Output ──────────────────────────────────────────────────────────
     st.subheader("Estimated Max Velocity and Array Power Output")
     out1, out2, out3 = st.columns(3)
 
     with out1:
         st.write(f"**Selected Demo Depth:** {selected_depth:.2f} ft")
         st.write(f"**Approach Velocity:** {float(est_velocity['estimated_max_velocity_ft_s']):.2f} ft/s")
+        st.write(f"**Velocity confidence:** {est_velocity['confidence_label']}")
         st.write(f"**Turbine diameter:** {turbine_diameter_ft:.2f} ft")
         st.write(f"**Cp:** {cp:.2f}")
 
@@ -343,12 +334,13 @@ if st.session_state.results:
             f"({power['single_turbine_kw']:.4f} kW)"
         )
 
+    # ── Best Deployment Location ──────────────────────────────────────────────
     st.subheader("Estimated Best Deployment Location (x, y, z) — Stream Centerline")
     loc1, loc2 = st.columns([1, 1])
     with loc1:
         st.code(
-            f"x = {center_lon:.6f}\n"
-            f"y = {center_lat:.6f}\n"
+            f"x = {deploy_lon:.6f}\n"
+            f"y = {deploy_lat:.6f}\n"
             f"z = {z_from_surface:.2f} ft below surface",
             language="text",
         )
@@ -356,16 +348,16 @@ if st.session_state.results:
         st.write(f"**Distance downstream of upper boundary:** {est_locations['best_candidate_distance_ft']:.0f} ft")
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
-        if _center_offset > 0:
-            st.write(f"**Centerline offset (Wbkf):** {_center_offset:.2f} ft")
-        else:
-            st.write("**Deployment point:** GPS-pinned on creek centerline")
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
+        st.write(f"**Position method:** {'NHDPlus flowline centerline ✅' if used_flowline else 'Bearing projection ⚠️'}")
         st.caption(f"📡 {est_locations['elev_method']}")
 
     # ── Deployment map ────────────────────────────────────────────────────────
     st.subheader("Deployment Map")
-    st.caption("💡 Hover over the creek to read live lat/lon. Use the ruler tool (top-left) to measure distances.")
+    st.caption(
+        "💡 Hover over the creek to read live lat/lon (bottom-left). "
+        "Use the ruler tool (top-left) to measure distances."
+    )
     try:
         import folium
         import folium.plugins as plugins
@@ -417,32 +409,39 @@ if st.session_state.results:
         # North arrow
         north_arrow_html = """
         <div style="
-            position: fixed;
-            top: 10px; right: 50px;
-            z-index: 9999;
-            background: white;
-            border-radius: 50%;
-            width: 36px; height: 36px;
-            text-align: center;
-            line-height: 36px;
-            font-size: 20px;
+            position: fixed; top: 10px; right: 50px; z-index: 9999;
+            background: white; border-radius: 50%;
+            width: 36px; height: 36px; text-align: center;
+            line-height: 36px; font-size: 20px;
             box-shadow: 2px 2px 5px rgba(0,0,0,0.4);
-            pointer-events: none;
-        ">🧭</div>
+            pointer-events: none;">🧭</div>
         """
         m.get_root().html.add_child(folium.Element(north_arrow_html))
 
-        # Best deployment point — GPS-pinned centerline
+        # Draw NHDPlus flowline on map (when available) so the creek is visible
+        if hydro.flowline_coords and len(hydro.flowline_coords) >= 2:
+            folium.PolyLine(
+                locations=[(lat, lon) for lat, lon in hydro.flowline_coords],
+                color="#00BFFF",
+                weight=3,
+                opacity=0.8,
+                tooltip="NHDPlus flowline centerline",
+            ).add_to(m)
+
+        # Best deployment point — on stream centerline via flowline walk
+        deploy_method = "NHDPlus flowline centerline" if used_flowline else "bearing projection"
         popup_text = (
-            f"Best Deployment Point (GPS-pinned centerline)<br>"
-            f"Lat: {center_lat:.6f} | Lon: {center_lon:.6f}<br>"
+            f"Best Deployment Point<br>"
+            f"Method: {deploy_method}<br>"
+            f"Lat: {deploy_lat:.6f} | Lon: {deploy_lon:.6f}<br>"
+            f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
             f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
             f"z = {z_from_surface:.2f} ft below surface"
         )
         folium.Marker(
-            location=[center_lat, center_lon],
-            popup=folium.Popup(popup_text, max_width=260),
-            tooltip="Best Deployment Point — stream centerline",
+            location=[deploy_lat, deploy_lon],
+            popup=folium.Popup(popup_text, max_width=280),
+            tooltip=f"Best Deployment Point ({deploy_method})",
             icon=folium.Icon(color="orange", icon="water", prefix="fa"),
         ).add_to(m)
 
@@ -466,4 +465,7 @@ if st.session_state.results:
         st.code(hydro.debug_streamstats_excerpt, language="json")
 
 else:
-    st.info("Upper boundary coordinates are loaded. Choose a demo depth and click Run Demo Recommendation.")
+    st.info(
+        "Upper boundary coordinates are loaded. "
+        "Choose a demo depth and click Run Demo Recommendation."
+    )
