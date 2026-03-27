@@ -13,10 +13,10 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT              = 35.3064145
-DEFAULT_LON              = -83.1849173
-DEFAULT_SEARCH_DISTANCE_FT = 150        # ≈ 46 m  (primary unit is now FEET)
-M_TO_FT                  = 3.28084
+DEFAULT_LAT                = 35.306189   # pinned in Cullowhee Creek
+DEFAULT_LON                = -83.184698  # pinned in Cullowhee Creek
+DEFAULT_SEARCH_DISTANCE_FT = 150         # primary unit is FEET
+M_TO_FT                    = 3.28084
 
 
 # ── Centerline-offset helper ──────────────────────────────────────────────────
@@ -79,9 +79,9 @@ with st.sidebar:
     st.caption(f"≈ {search_distance_m:.0f} m — vessel evaluates candidates every 5 ft within this range")
 
     # Depth range: 0.50 ft → 12.00 ft, 0.25 ft increments
-    demo_depths   = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
-    default_depth = 2.00
-    default_index = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
+    demo_depths    = [round(0.50 + i * 0.25, 2) for i in range(int((12.00 - 0.50) / 0.25) + 1)]
+    default_depth  = 2.00
+    default_index  = demo_depths.index(default_depth) if default_depth in demo_depths else len(demo_depths) // 2
 
     selected_depth = st.selectbox(
         "Select demo water depth (ft)",
@@ -91,7 +91,7 @@ with st.sidebar:
     )
 
     st.subheader("Drainage Area Options")
-    use_manual_da       = st.checkbox("Override with manual drainage area", value=False)
+    use_manual_da        = st.checkbox("Override with manual drainage area", value=False)
     drainage_area_manual = st.number_input(
         "Manual drainage area (mi²)",
         min_value=0.0001,
@@ -160,7 +160,7 @@ if run_button:
 
             bankfull = compute_bankfull_metrics(drainage_area_sqmi)
 
-            # ── Jensen wake model — auto-computed from regional curve hydraulics ──
+            # ── Jensen wake model ─────────────────────────────────────────────
             _g_ft_s2 = 32.2
             _v_bkf   = bankfull["Qbkf"] / bankfull["Abkf"] if bankfull["Abkf"] > 0 else 1.0
             _fr      = _v_bkf / _math.sqrt(_g_ft_s2 * bankfull["Dbkf"]) if bankfull["Dbkf"] > 0 else 0.3
@@ -208,10 +208,10 @@ if run_button:
                 wake_velocity_factor=wake_velocity_factor,
             )
 
-            # ── Centerline shift: ½ × Wbkf perpendicular to flow ──────────────
-            # bearing + 90° = right-bank offset (flip to − 90° if upper boundary
-            # is on the left bank and the marker lands on dry ground).
-            _perp_bearing  = (hydro.downstream_bearing + 90) % 360
+            # ── Centerline shift: ½ × Wbkf perpendicular to flow ─────────────
+            # bearing − 90° = left-bank offset (west on Cullowhee Creek).
+            # If the orange marker lands on the far bank, change to + 90.
+            _perp_bearing  = (hydro.downstream_bearing - 90) % 360
             _half_width_ft = bankfull["Wbkf"] / 2.0
             center_lat, center_lon = _offset_point(
                 est_locations["max_velocity_lat"],
@@ -360,7 +360,7 @@ if st.session_state.results:
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
-    # ── Deployment map — Esri World Imagery satellite basemap ─────────────────
+    # ── Deployment map — Esri World Imagery satellite + hybrid labels ─────────
     st.subheader("Deployment Map")
     try:
         import folium
@@ -368,7 +368,7 @@ if st.session_state.results:
 
         m = folium.Map(
             location=[lat, lon],
-            zoom_start=17,
+            zoom_start=19,
             tiles=(
                 "https://server.arcgisonline.com/ArcGIS/rest/services"
                 "/World_Imagery/MapServer/tile/{z}/{y}/{x}"
@@ -376,7 +376,7 @@ if st.session_state.results:
             attr="Esri World Imagery",
         )
 
-        # Hybrid labels overlay (road/stream names on top of satellite)
+        # Hybrid labels overlay (stream/road names on satellite)
         folium.TileLayer(
             tiles=(
                 "https://server.arcgisonline.com/ArcGIS/rest/services"
@@ -388,7 +388,7 @@ if st.session_state.results:
             opacity=0.7,
         ).add_to(m)
 
-        # Best deployment point — shifted to stream centerline
+        # Best deployment point — stream centerline
         popup_text = (
             f"Best Deployment Point (centerline)<br>"
             f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
