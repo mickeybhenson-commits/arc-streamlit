@@ -13,14 +13,19 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.306598   # Cullowhee Creek upper boundary
-DEFAULT_LON                = -83.187000  # shifted west into creek channel
+DEFAULT_LAT                = 35.307500   # shifted north toward creek channel
+DEFAULT_LON                = -83.185800  # split between prior attempts
 DEFAULT_SEARCH_DISTANCE_FT = 300         # primary unit is FEET
 M_TO_FT                    = 3.28084
 
 
 # ── Centerline-offset helper ──────────────────────────────────────────────────
 def _offset_point(lat: float, lon: float, bearing_deg: float, distance_ft: float):
+    """
+    Return a new (lat, lon) displaced from the input point by distance_ft
+    along the given bearing (degrees, clockwise from north).
+    Uses spherical-earth approximation (R = 6 371 000 m).
+    """
     dist_m = distance_ft / M_TO_FT
     R      = 6_371_000.0
     b      = _math.radians(bearing_deg)
@@ -344,9 +349,13 @@ if st.session_state.results:
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
+    # ── Deployment map ────────────────────────────────────────────────────────
     st.subheader("Deployment Map")
+    st.caption("💡 Hover over the creek to read lat/lon coordinates. Use the ruler tool to measure distances.")
     try:
         import folium
+        import folium.plugins as plugins
+        from folium.plugins import MousePosition, MeasureControl
         from streamlit_folium import st_folium
 
         m = folium.Map(
@@ -359,6 +368,7 @@ if st.session_state.results:
             attr="Esri World Imagery",
         )
 
+        # Hybrid labels overlay
         folium.TileLayer(
             tiles=(
                 "https://server.arcgisonline.com/ArcGIS/rest/services"
@@ -370,6 +380,45 @@ if st.session_state.results:
             opacity=0.7,
         ).add_to(m)
 
+        # Live lat/lon readout on hover
+        MousePosition(
+            position="bottomleft",
+            separator=" | ",
+            prefix="Lat/Lon:",
+            lat_formatter="function(num) {return L.Util.formatNum(num, 6);}",
+            lng_formatter="function(num) {return L.Util.formatNum(num, 6);}",
+        ).add_to(m)
+
+        # Distance/area measure tool (top-left)
+        MeasureControl(
+            position="topleft",
+            primary_length_unit="feet",
+            secondary_length_unit="meters",
+            primary_area_unit="sqfeet",
+        ).add_to(m)
+
+        # Fullscreen button (top-right)
+        plugins.Fullscreen(position="topright").add_to(m)
+
+        # North arrow via fixed HTML overlay
+        north_arrow_html = """
+        <div style="
+            position: fixed;
+            top: 10px; right: 50px;
+            z-index: 9999;
+            background: white;
+            border-radius: 50%;
+            width: 36px; height: 36px;
+            text-align: center;
+            line-height: 36px;
+            font-size: 20px;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.4);
+            pointer-events: none;
+        ">🧭</div>
+        """
+        m.get_root().html.add_child(folium.Element(north_arrow_html))
+
+        # Best deployment point — stream centerline
         popup_text = (
             f"Best Deployment Point (centerline)<br>"
             f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
@@ -384,6 +433,7 @@ if st.session_state.results:
             icon=folium.Icon(color="orange", icon="water", prefix="fa"),
         ).add_to(m)
 
+        # Upper boundary marker
         folium.Marker(
             location=[lat, lon],
             popup=f"Upper Boundary — vessel searches {search_distance_ft:.0f} ft downstream",
@@ -391,7 +441,7 @@ if st.session_state.results:
             icon=folium.Icon(color="green", icon="flag", prefix="fa"),
         ).add_to(m)
 
-        st_folium(m, use_container_width=True, height=450, returned_objects=[])
+        st_folium(m, use_container_width=True, height=500, returned_objects=[])
 
     except Exception as map_err:
         st.warning(f"Map could not render: {map_err}")
