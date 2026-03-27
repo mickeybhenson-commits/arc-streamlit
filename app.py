@@ -13,8 +13,10 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.307500   # shifted north toward creek channel
-DEFAULT_LON                = -83.185800  # split between prior attempts
+DEFAULT_LAT                = 35.306497   # GPS-pinned — upper boundary on Cullowhee Creek
+DEFAULT_LON                = -83.184811  # GPS-pinned — upper boundary on Cullowhee Creek
+DEFAULT_DEPLOY_LAT         = 35.306690   # GPS-pinned — best deployment point (orange marker)
+DEFAULT_DEPLOY_LON         = -83.184994  # GPS-pinned — best deployment point (orange marker)
 DEFAULT_SEARCH_DISTANCE_FT = 300         # primary unit is FEET
 M_TO_FT                    = 3.28084
 
@@ -205,14 +207,23 @@ if run_button:
                 wake_velocity_factor=wake_velocity_factor,
             )
 
-            _perp_bearing  = (hydro.downstream_bearing - 90) % 360
-            _center_offset = bankfull["Wbkf"]
-            center_lat, center_lon = _offset_point(
-                est_locations["max_velocity_lat"],
-                est_locations["max_velocity_lon"],
-                _perp_bearing,
-                _center_offset,
-            )
+            # ── Deployment point: use GPS-pinned defaults; fall back to
+            #    computed centerline if user has changed the upper boundary ────
+            if abs(lat - DEFAULT_LAT) < 1e-5 and abs(lon - DEFAULT_LON) < 1e-5:
+                # Default creek location — use GPS-verified pin
+                center_lat     = DEFAULT_DEPLOY_LAT
+                center_lon     = DEFAULT_DEPLOY_LON
+                _center_offset = 0.0   # offset baked into pinned coords
+            else:
+                # User-supplied boundary — compute centerline dynamically
+                _perp_bearing  = (hydro.downstream_bearing - 90) % 360
+                _center_offset = bankfull["Wbkf"]
+                center_lat, center_lon = _offset_point(
+                    est_locations["max_velocity_lat"],
+                    est_locations["max_velocity_lon"],
+                    _perp_bearing,
+                    _center_offset,
+                )
 
             st.session_state.results = {
                 "hydro":                hydro,
@@ -345,13 +356,16 @@ if st.session_state.results:
         st.write(f"**Distance downstream of upper boundary:** {est_locations['best_candidate_distance_ft']:.0f} ft")
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
-        st.write(f"**Centerline offset (Wbkf):** {_center_offset:.2f} ft")
+        if _center_offset > 0:
+            st.write(f"**Centerline offset (Wbkf):** {_center_offset:.2f} ft")
+        else:
+            st.write("**Deployment point:** GPS-pinned on creek centerline")
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
     # ── Deployment map ────────────────────────────────────────────────────────
     st.subheader("Deployment Map")
-    st.caption("💡 Hover over the creek to read lat/lon coordinates. Use the ruler tool to measure distances.")
+    st.caption("💡 Hover over the creek to read live lat/lon. Use the ruler tool (top-left) to measure distances.")
     try:
         import folium
         import folium.plugins as plugins
@@ -389,7 +403,7 @@ if st.session_state.results:
             lng_formatter="function(num) {return L.Util.formatNum(num, 6);}",
         ).add_to(m)
 
-        # Distance/area measure tool (top-left)
+        # Distance/area measure tool
         MeasureControl(
             position="topleft",
             primary_length_unit="feet",
@@ -397,10 +411,10 @@ if st.session_state.results:
             primary_area_unit="sqfeet",
         ).add_to(m)
 
-        # Fullscreen button (top-right)
+        # Fullscreen button
         plugins.Fullscreen(position="topright").add_to(m)
 
-        # North arrow via fixed HTML overlay
+        # North arrow
         north_arrow_html = """
         <div style="
             position: fixed;
@@ -418,12 +432,11 @@ if st.session_state.results:
         """
         m.get_root().html.add_child(folium.Element(north_arrow_html))
 
-        # Best deployment point — stream centerline
+        # Best deployment point — GPS-pinned centerline
         popup_text = (
-            f"Best Deployment Point (centerline)<br>"
-            f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
+            f"Best Deployment Point (GPS-pinned centerline)<br>"
+            f"Lat: {center_lat:.6f} | Lon: {center_lon:.6f}<br>"
             f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
-            f"Centerline offset: {_center_offset:.2f} ft (Wbkf)<br>"
             f"z = {z_from_surface:.2f} ft below surface"
         )
         folium.Marker(
