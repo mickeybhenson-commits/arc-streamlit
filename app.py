@@ -13,8 +13,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.306415   # upper boundary — Cullowhee Creek near Bardo / Base Camp
-DEFAULT_LON                = -83.184694  # upper boundary — Cullowhee Creek near Bardo / Base Camp
+DEFAULT_LAT                = 35.306415   # upper boundary — Cullowhee Creek
+DEFAULT_LON                = -83.184694  # upper boundary — Cullowhee Creek
 DEFAULT_SEARCH_DISTANCE_FT = 150         # primary unit is FEET
 M_TO_FT                    = 3.28084
 
@@ -208,16 +208,17 @@ if run_button:
                 wake_velocity_factor=wake_velocity_factor,
             )
 
-            # ── Centerline shift: ½ × Wbkf perpendicular to flow ─────────────
+            # ── Centerline shift: full Wbkf perpendicular to flow ─────────────
             # bearing − 90° = left-bank offset (west on Cullowhee Creek).
-            # If the orange marker lands on the far bank, change to + 90.
+            # If marker overshoots to far bank, change to * 0.75.
+            # If marker lands on near bank, change to + 90.
             _perp_bearing  = (hydro.downstream_bearing - 90) % 360
-            _half_width_ft = bankfull["Wbkf"] / 2.0
+            _center_offset = bankfull["Wbkf"]          # full channel width
             center_lat, center_lon = _offset_point(
                 est_locations["max_velocity_lat"],
                 est_locations["max_velocity_lon"],
                 _perp_bearing,
-                _half_width_ft,
+                _center_offset,
             )
 
             # ── Persist all results ───────────────────────────────────────────
@@ -244,7 +245,7 @@ if run_button:
                 "search_distance_ft":   search_distance_ft,
                 "center_lat":           center_lat,
                 "center_lon":           center_lon,
-                "_half_width_ft":       _half_width_ft,
+                "_center_offset":       _center_offset,
             }
 
     except Exception as e:
@@ -277,7 +278,7 @@ if st.session_state.results:
     search_distance_ft   = r["search_distance_ft"]
     center_lat           = r["center_lat"]
     center_lon           = r["center_lon"]
-    _half_width_ft       = r["_half_width_ft"]
+    _center_offset       = r["_center_offset"]
 
     z_from_surface = round(selected_depth * 0.20, 2)
 
@@ -356,7 +357,7 @@ if st.session_state.results:
         st.write(f"**Distance downstream of upper boundary:** {est_locations['best_candidate_distance_ft']:.0f} ft")
         st.write(f"**Est. depth at best point:** {est_locations['best_candidate_depth_ft']:.2f} ft")
         st.write(f"**Velocity score:** {est_locations['best_candidate_score']:.2f} ft/s")
-        st.write(f"**Centerline offset (½ × Wbkf):** {_half_width_ft:.2f} ft")
+        st.write(f"**Centerline offset (Wbkf):** {_center_offset:.2f} ft")
         st.write(f"**Candidates searched:** {est_locations['candidates_searched']} (every 5 ft over {search_distance_ft:.0f} ft)")
         st.caption(f"📡 {est_locations['elev_method']}")
 
@@ -393,7 +394,7 @@ if st.session_state.results:
             f"Best Deployment Point (centerline)<br>"
             f"{est_locations['best_candidate_distance_ft']:.0f} ft downstream of upper boundary<br>"
             f"Est. depth: {est_locations['best_candidate_depth_ft']:.2f} ft<br>"
-            f"Centerline offset: {_half_width_ft:.2f} ft (½ × Wbkf)<br>"
+            f"Centerline offset: {_center_offset:.2f} ft (Wbkf)<br>"
             f"z = {z_from_surface:.2f} ft below surface"
         )
         folium.Marker(
