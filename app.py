@@ -13,8 +13,8 @@ from utils.hydro_logic import (
     build_demo_scenario_table,
 )
 
-DEFAULT_LAT                = 35.306189   # pinned in Cullowhee Creek
-DEFAULT_LON                = -83.184698  # pinned in Cullowhee Creek
+DEFAULT_LAT                = 35.310000   # Cullowhee Creek near Bardo / Base Camp
+DEFAULT_LON                = -83.180000  # Cullowhee Creek near Bardo / Base Camp
 DEFAULT_SEARCH_DISTANCE_FT = 150         # primary unit is FEET
 M_TO_FT                    = 3.28084
 
